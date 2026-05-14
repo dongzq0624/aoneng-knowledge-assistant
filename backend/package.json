@@ -1,5 +1,9 @@
 {
   "name": "aoneng-knowledge-assistant-backend",
+  "author": {
+    "name": "aoneng",
+    "email": "1217327656@qq.com"
+  },
   "version": "1.0.0",
   "type": "module",
   "scripts": {

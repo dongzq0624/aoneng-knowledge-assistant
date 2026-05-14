@@ -502,7 +502,7 @@ const chunkOverlap = 100;
 
 ## 📝 更新日志
 
-### v1.0.0 (2024-01)
+### v1.0.0 (2026-05)
 
 - ✨ 初始版本发布
 - 🚀 支持 PDF、DOCX、MD、TXT 文档
@@ -534,7 +534,7 @@ const chunkOverlap = 100;
 
 ## 💬 联系方式
 
-- 📧 Email: 1137772623@qq.com
+- 📧 Email: 1217327656@qq.com
 - 🐛 Issues: [GitHub Issues](../../issues)
 - 💡 Discussions: [GitHub Discussions](../../discussions)
 

@@ -1,0 +1,35 @@
+{
+  "name": "aoneng-knowledge-assistant-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@langchain/community": "^0.3.18",
+    "@langchain/core": "^0.3.24",
+    "@langchain/openai": "^0.3.16",
+    "@langchain/textsplitters": "^1.0.1",
+    "apache-arrow": "^14.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "langchain": "^0.3.7",
+    "mammoth": "^1.8.0",
+    "multer": "^1.4.5-lts.1",
+    "pdf-parse": "^2.4.5",
+    "pdfjs-dist": "^3.11.174",
+    "vectordb": "^0.11.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/multer": "^1.4.12",
+    "@types/node": "^22.10.5",
+    "@types/pdf-parse": "^1.1.4",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

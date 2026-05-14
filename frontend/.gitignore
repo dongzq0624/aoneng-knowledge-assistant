@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+dist/
+
+# Environment variables
+.env
+
+# Database
+lancedb/
+backend/lancedb/
+
+# Uploads
+backend/uploads/
+
+# Logs
+*.log
+logs/
+*.pid
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE - IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# IDE - VSCode
+.vscode/
+*.code-workspace
+
+# IDE - WebStorm
+.idea/
+
+# Build
+build/
+.cache/

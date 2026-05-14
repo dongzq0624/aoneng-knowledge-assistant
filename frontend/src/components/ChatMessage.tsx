@@ -3,10 +3,11 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
-import type { ChatMessage as Message } from "../api";
+import type { ChatMessage as Message, SourceReference } from "../api";
 
 interface Props {
   message: Message;
+  isDarkMode?: boolean;
 }
 
 // 代码块组件
@@ -86,11 +87,97 @@ function CodeBlock({ language, value }: { language: string; value: string }) {
   );
 }
 
-export default function ChatMessage({ message }: Props) {
+// 格式化来源显示（只显示文件名，不显示页码）
+function formatSource(source: SourceReference): string {
+  return source.filename;
+}
+
+// 清理Markdown内容，移除可能的代码块包装
+function cleanMarkdownContent(content: string): string {
+  if (!content) return content;
+
+  let cleaned = content;
+
+  // 移除开头的 ```markdown 或 ``` 标记
+  if (cleaned.startsWith('```markdown')) {
+    cleaned = cleaned.substring('```markdown'.length);
+  } else if (cleaned.startsWith('```')) {
+    cleaned = cleaned.substring('```'.length);
+  }
+
+  // 移除结尾的 ``` 标记
+  if (cleaned.endsWith('```')) {
+    cleaned = cleaned.substring(0, cleaned.length - '```'.length);
+  }
+
+  // 清理开头和结尾的空白字符
+  cleaned = cleaned.trim();
+
+  return cleaned;
+}
+
+// 图片查看器组件
+function ImageViewer({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+  return (
+    <div 
+      className="fixed inset-0 bg-black/90 flex items-center justify-center z-[100]"
+      onClick={onClose}
+    >
+      <button
+        onClick={onClose}
+        className="absolute top-4 right-4 text-white hover:text-gray-300 transition-colors p-2"
+        title="关闭"
+      >
+        <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
+      <img
+        src={src}
+        alt={alt}
+        className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg"
+        onClick={(e) => e.stopPropagation()}
+      />
+    </div>
+  );
+}
+
+// 图片组件
+function ImageComponent({ src, alt, isDarkMode }: { src: string; alt: string; isDarkMode: boolean }) {
+  const [showViewer, setShowViewer] = useState(false);
+
+  return (
+    <>
+      <div className="my-3">
+        <img
+          src={src}
+          alt={alt}
+          className={`rounded-lg shadow-md cursor-pointer hover:opacity-90 transition-opacity max-w-full max-h-[400px] object-contain ${isDarkMode ? 'border border-gray-700' : 'border border-gray-200'}`}
+          onClick={() => setShowViewer(true)}
+          loading="lazy"
+        />
+        {alt && (
+          <p className={`text-xs mt-1 text-center ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+            {alt}
+          </p>
+        )}
+      </div>
+      {showViewer && (
+        <ImageViewer
+          src={src}
+          alt={alt}
+          onClose={() => setShowViewer(false)}
+        />
+      )}
+    </>
+  );
+}
+
+export default function ChatMessage({ message, isDarkMode = false }: Props) {
   const isUser = message.role === "user";
 
   return (
-    <div className={`flex gap-2.5 ${isUser ? "justify-end" : "justify-start"}`}>
+    <div className={`flex gap-2 ${isUser ? "justify-end" : "justify-start"}`}>
       {!isUser && (
         <div className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center bg-gradient-to-br from-blue-600 to-blue-700 text-white shadow-md">
           <span className="text-xs font-bold">AI</span>
@@ -104,10 +191,12 @@ export default function ChatMessage({ message }: Props) {
         }`}
       >
         <div
-          className={`inline-block max-w-[85%] ${
+          className={`inline-block max-w-[85%] sm:max-w-[80%] ${
             isUser
-              ? "bg-gradient-to-br from-blue-600 to-blue-700 text-white rounded-2xl px-4 py-2.5 shadow-md"
-              : "bg-white text-gray-900 rounded-xl p-3 shadow-sm border border-blue-50"
+              ? "bg-gradient-to-br from-blue-600 to-blue-700 text-white rounded-2xl px-3 sm:px-4 py-2 sm:py-2.5 shadow-md"
+              : isDarkMode
+              ? "bg-gray-700 text-gray-100 rounded-xl p-2.5 sm:p-3 shadow-sm border border-gray-600"
+              : "bg-white text-gray-900 rounded-xl p-2.5 sm:p-3 shadow-sm border border-blue-50"
           }`}
         >
           {isUser ? (
@@ -123,28 +212,28 @@ export default function ChatMessage({ message }: Props) {
                     table: ({ node, ...props }) => (
                       <div className="overflow-x-auto my-2">
                         <table
-                          className="min-w-full divide-y divide-gray-300 border border-gray-300"
+                          className={`min-w-full divide-y border ${isDarkMode ? 'divide-gray-600 border-gray-600' : 'divide-gray-300 border-gray-300'}`}
                           {...props}
                         />
                       </div>
                     ),
                     thead: ({ node, ...props }) => (
-                      <thead className="bg-gray-50" {...props} />
+                      <thead className={`${isDarkMode ? 'bg-gray-800' : 'bg-gray-50'}`} {...props} />
                     ),
                     th: ({ node, ...props }) => (
                       <th
-                        className="px-3 py-2 text-left text-xs font-semibold text-gray-900 border border-gray-300"
+                        className={`px-3 py-2 text-left text-xs font-semibold border ${isDarkMode ? 'text-gray-100 border-gray-600' : 'text-gray-900 border-gray-300'}`}
                         {...props}
                       />
                     ),
                     td: ({ node, ...props }) => (
                       <td
-                        className="px-3 py-2 text-sm text-gray-700 border border-gray-300"
+                        className={`px-3 py-2 text-sm border ${isDarkMode ? 'text-gray-300 border-gray-600' : 'text-gray-700 border-gray-300'}`}
                         {...props}
                       />
                     ),
                     tr: ({ node, ...props }) => (
-                      <tr className="hover:bg-gray-50" {...props} />
+                      <tr className={`${isDarkMode ? 'hover:bg-gray-800' : 'hover:bg-gray-50'}`} {...props} />
                     ),
                     code: ({
                       node,
@@ -157,9 +246,18 @@ export default function ChatMessage({ message }: Props) {
                       const language = match ? match[1] : "";
                       const value = String(children).replace(/\n$/, "");
 
+                      // 如果是markdown代码块，直接渲染内容而不是显示为代码
+                      if (language === "markdown") {
+                        return (
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {value}
+                          </ReactMarkdown>
+                        );
+                      }
+
                       return inline ? (
                         <code
-                          className="bg-gray-100 text-red-600 px-1.5 py-0.5 rounded text-xs font-mono"
+                          className={`px-1.5 py-0.5 rounded text-xs font-mono ${isDarkMode ? 'bg-gray-800 text-red-400' : 'bg-gray-100 text-red-600'}`}
                           {...props}
                         >
                           {children}
@@ -170,55 +268,62 @@ export default function ChatMessage({ message }: Props) {
                     },
                     ul: ({ node, ...props }) => (
                       <ul
-                        className="list-disc ml-5 mb-2 space-y-1 text-gray-800"
+                        className={`list-disc ml-5 mb-2 space-y-1 ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}
                         {...props}
                       />
                     ),
                     ol: ({ node, ...props }) => (
                       <ol
-                        className="list-decimal ml-5 mb-2 space-y-1 text-gray-800"
+                        className={`list-decimal ml-5 mb-2 space-y-1 ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}
                         {...props}
                       />
                     ),
                     li: ({ node, ...props }) => (
-                      <li className="text-gray-800" {...props} />
+                      <li className={`${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`} {...props} />
                     ),
                     p: ({ node, ...props }) => (
-                      <p className="mb-2 text-gray-800" {...props} />
+                      <p className={`mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`} {...props} />
                     ),
                     strong: ({ node, ...props }) => (
                       <strong
-                        className="font-semibold text-gray-900"
+                        className={`font-semibold ${isDarkMode ? 'text-gray-100' : 'text-gray-900'}`}
                         {...props}
                       />
                     ),
                     em: ({ node, ...props }) => (
-                      <em className="italic text-gray-700" {...props} />
+                      <em className={`italic ${isDarkMode ? 'text-gray-400' : 'text-gray-700'}`} {...props} />
                     ),
                     h1: ({ node, ...props }) => (
                       <h1
-                        className="text-lg font-bold text-gray-900 mt-3 mb-2"
+                        className={`text-lg font-bold mt-3 mb-2 ${isDarkMode ? 'text-gray-100' : 'text-gray-900'}`}
                         {...props}
                       />
                     ),
                     h2: ({ node, ...props }) => (
                       <h2
-                        className="text-base font-bold text-gray-900 mt-3 mb-2"
+                        className={`text-base font-bold mt-3 mb-2 ${isDarkMode ? 'text-gray-100' : 'text-gray-900'}`}
                         {...props}
                       />
                     ),
                     h3: ({ node, ...props }) => (
                       <h3
-                        className="text-sm font-bold text-gray-900 mt-2 mb-1"
+                        className={`text-sm font-bold mt-2 mb-1 ${isDarkMode ? 'text-gray-100' : 'text-gray-900'}`}
                         {...props}
+                      />
+                    ),
+                    img: ({ src, alt }: any) => (
+                      <ImageComponent
+                        src={src}
+                        alt={alt || ""}
+                        isDarkMode={isDarkMode}
                       />
                     ),
                   }}
                 >
-                  {message.content}
+                  {cleanMarkdownContent(message.content)}
                 </ReactMarkdown>
               ) : (
-                <span className="text-gray-400 italic">正在输入...</span>
+                <span className={`italic ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>正在输入...</span>
               )}
             </div>
           )}
@@ -227,13 +332,17 @@ export default function ChatMessage({ message }: Props) {
         {/* 引用来源 */}
         {!isUser && message.sources && message.sources.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mt-1.5">
-            <span className="text-xs text-blue-600">📚</span>
+            <span className={`text-xs ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>📚</span>
             {message.sources.map((source, idx) => (
               <span
                 key={idx}
-                className="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 px-2 py-0.5 rounded-md transition-colors cursor-pointer border border-blue-100"
+                className={`text-xs px-2 py-0.5 rounded-md transition-colors cursor-pointer border ${
+                  isDarkMode
+                    ? 'bg-gray-800 hover:bg-gray-700 text-blue-400 border-gray-700'
+                    : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-100'
+                }`}
               >
-                {source}
+                {formatSource(source)}
               </span>
             ))}
           </div>

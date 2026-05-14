@@ -25,3 +25,7 @@ export interface DocumentChunk {
     chunkIndex: number;
   };
 }
+
+export interface SourceReference {
+  filename: string;
+}

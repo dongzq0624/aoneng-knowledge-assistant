@@ -1,10 +1,14 @@
 // API 封装
 const API_BASE = "/api";
 
+export interface SourceReference {
+  filename: string;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
-  sources?: string[];
+  sources?: SourceReference[];
 }
 
 // 上传文件
@@ -37,7 +41,7 @@ export async function* sendMessage(
 ): AsyncGenerator<{
   type: string;
   content?: string;
-  sources?: string[];
+  sources?: SourceReference[];
   error?: string;
 }> {
   console.log("📤 发送消息:", message);

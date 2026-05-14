@@ -9,7 +9,9 @@ import fs from "fs/promises";
 import uploadRouter from "./routes/upload.js";
 import chatRouter from "./routes/chat.js";
 import knowledgeRouter from "./routes/knowledge.js";
+import modelRouter from "./routes/model.js";
 import { vectorStore } from "./services/vectorstore.js";
+import { initializeModels } from "./services/ragChain.js";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -34,6 +36,7 @@ async function initializeServices() {
 
   await ensureUploadDir();
   await vectorStore.initialize();
+  await initializeModels();
 
   console.log("✅ 所有服务初始化完成");
 }
@@ -42,10 +45,11 @@ async function initializeServices() {
 app.use("/api/upload", uploadRouter);
 app.use("/api/chat", chatRouter);
 app.use("/api/knowledge", knowledgeRouter);
+app.use("/api/model", modelRouter);
 
 // 健康检查
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", message: "Local DeepSeek RAG Backend" });
+  res.json({ status: "ok", message: "AONENG Knowledge Assistant Backend" });
 });
 
 // 启动服务器

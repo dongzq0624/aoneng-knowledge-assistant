@@ -3,55 +3,228 @@ import dotenv from "dotenv";
 dotenv.config(); // 确保环境变量已加载
 
 import { ChatOpenAI } from "@langchain/openai";
+import fs from "fs/promises";
+import path from "path";
 import { vectorStore } from "./vectorstore.js";
-import type { ChatMessage } from "../types.js";
+import type { ChatMessage, SourceReference } from "../types.js";
 
-const GLM_API_KEY =
-  process.env.GLM_API_KEY ||
-  "a2b3968e02a440c2971691fa545a05d4.TD0pU9hvf17syzly";
-const GLM_BASE_URL =
-  process.env.GLM_BASE_URL || "https://open.bigmodel.cn/api/paas/v4";
-const GLM_MODEL = process.env.GLM_MODEL || "glm-4-flash";
-const USE_FAST_PREPROCESSING =
-  process.env.USE_FAST_PREPROCESSING === "true" || false;
+// 默认配置（作为后备）
+const DEFAULT_GLM_API_KEY = process.env.GLM_API_KEY || "";
+const DEFAULT_GLM_BASE_URL = process.env.GLM_BASE_URL || "https://open.bigmodel.cn/api/paas/v4";
+const DEFAULT_DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || "";
+const DEFAULT_DEEPSEEK_BASE_URL = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1";
 
-console.log("🔑 GLM API Key:", GLM_API_KEY ? "已配置" : "未配置");
-console.log("🌐 GLM Base URL:", GLM_BASE_URL);
-console.log("🤖 GLM Model:", GLM_MODEL);
+interface ModelConfig {
+  provider: "glm" | "deepseek";
+  glmApiKey: string;
+  glmBaseUrl: string;
+  deepseekApiKey: string;
+  deepseekBaseUrl: string;
+  preprocessingModel: string;
+  generationModel: string;
+  temperature: number;
+  maxTokens: number;
+  embeddingModel: string;
+}
 
-// 初始化主 LLM（用于最终回答）
-const llm = new ChatOpenAI({
-  openAIApiKey: GLM_API_KEY,
-  modelName: GLM_MODEL,
-  temperature: 0.7,
-  streaming: true,
-  configuration: {
-    baseURL: GLM_BASE_URL,
-  },
-});
+// 判断模型属于哪个提供商
+function getModelProvider(modelName: string): "glm" | "deepseek" {
+  if (modelName.startsWith("deepseek") || modelName.startsWith("ds-")) {
+    return "deepseek";
+  }
+  return "glm"; // 默认为智谱
+}
 
-// 初始化快速 LLM（用于关键词提取和查询改写）
-// 根据配置决定是否使用快速模型进行预处理
-const shouldUseFastPreprocessing =
-  USE_FAST_PREPROCESSING && GLM_MODEL !== "glm-4-flash";
+// 根据模型名称获取对应的配置（使用配置文件中的值）
+function getModelConfig(modelName: string) {
+  const provider = getModelProvider(modelName);
+  
+  if (provider === "deepseek") {
+    return {
+      apiKey: modelConfig?.deepseekApiKey || DEFAULT_DEEPSEEK_API_KEY,
+      baseURL: modelConfig?.deepseekBaseUrl || DEFAULT_DEEPSEEK_BASE_URL,
+      provider: "DeepSeek" as const,
+    };
+  }
+  
+  return {
+    apiKey: modelConfig?.glmApiKey || DEFAULT_GLM_API_KEY,
+    baseURL: modelConfig?.glmBaseUrl || DEFAULT_GLM_BASE_URL,
+    provider: "智谱GLM" as const,
+  };
+}
 
-const fastLLM = shouldUseFastPreprocessing
-  ? new ChatOpenAI({
-      openAIApiKey: GLM_API_KEY,
-      modelName: "glm-4-flash",
-      temperature: 0.3,
-      configuration: {
-        baseURL: GLM_BASE_URL,
-      },
-    })
-  : llm;
+async function loadModelConfig(): Promise<ModelConfig> {
+  const CONFIG_FILE = path.join(process.cwd(), "model-config.json");
+  
+  try {
+    const data = await fs.readFile(CONFIG_FILE, "utf-8");
+    const config = JSON.parse(data);
+    
+    console.log("✅ 已加载模型配置文件");
+    
+    // 兼容旧配置格式
+    if (config.model || config.preprocessingModel) {
+      return {
+        provider: config.provider || "glm",
+        glmApiKey: config.glmApiKey || DEFAULT_GLM_API_KEY,
+        glmBaseUrl: config.glmBaseUrl || DEFAULT_GLM_BASE_URL,
+        deepseekApiKey: config.deepseekApiKey || DEFAULT_DEEPSEEK_API_KEY,
+        deepseekBaseUrl: config.deepseekBaseUrl || DEFAULT_DEEPSEEK_BASE_URL,
+        preprocessingModel: config.preprocessingModel || config.model || process.env.GLM_MODEL || "glm-4-flash",
+        generationModel: config.generationModel || config.model || process.env.GLM_MODEL || "glm-4-flash",
+        temperature: config.temperature || 0.7,
+        maxTokens: config.maxTokens || 2000,
+        embeddingModel: config.embeddingModel || process.env.GLM_EMBEDDING_MODEL || "embedding-3",
+      };
+    }
+    
+    return {
+      provider: config.provider || "glm",
+      glmApiKey: config.glmApiKey || DEFAULT_GLM_API_KEY,
+      glmBaseUrl: config.glmBaseUrl || DEFAULT_GLM_BASE_URL,
+      deepseekApiKey: config.deepseekApiKey || DEFAULT_DEEPSEEK_API_KEY,
+      deepseekBaseUrl: config.deepseekBaseUrl || DEFAULT_DEEPSEEK_BASE_URL,
+      preprocessingModel: config.preprocessingModel || process.env.GLM_MODEL || "glm-4-flash",
+      generationModel: config.generationModel || process.env.GLM_MODEL || "glm-4-flash",
+      temperature: config.temperature || 0.7,
+      maxTokens: config.maxTokens || 2000,
+      embeddingModel: config.embeddingModel || process.env.GLM_EMBEDDING_MODEL || "embedding-3",
+    };
+  } catch (error) {
+    console.log("⚠️ 未找到模型配置文件，使用默认配置");
+    
+    // 兼容旧格式
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      return {
+        provider: "glm" as const,
+        glmApiKey: DEFAULT_GLM_API_KEY,
+        glmBaseUrl: DEFAULT_GLM_BASE_URL,
+        deepseekApiKey: DEFAULT_DEEPSEEK_API_KEY,
+        deepseekBaseUrl: DEFAULT_DEEPSEEK_BASE_URL,
+        preprocessingModel: process.env.GLM_MODEL || "glm-4-flash",
+        generationModel: process.env.GLM_MODEL || "glm-4-flash",
+        temperature: 0.7,
+        maxTokens: 2000,
+        embeddingModel: process.env.GLM_EMBEDDING_MODEL || "embedding-3",
+      };
+    }
+    
+    throw error;
+  }
+}
 
-if (shouldUseFastPreprocessing) {
-  console.log(
-    `⚡ 快速预处理已启用: glm-4-flash 进行预处理，${GLM_MODEL} 生成最终回答`
-  );
-} else {
-  console.log(`✅ 全程使用 ${GLM_MODEL} 模型`);
+let modelConfig: ModelConfig;
+
+// 初始化模型（异步）
+export async function initializeModels(): Promise<void> {
+  try {
+    modelConfig = await loadModelConfig();
+    
+    const preProvider = getModelProvider(modelConfig.preprocessingModel);
+    const genProvider = getModelProvider(modelConfig.generationModel);
+    const preConfig = getModelConfig(modelConfig.preprocessingModel);
+    const genConfig = getModelConfig(modelConfig.generationModel);
+    
+    console.log("\n🤖 模型配置信息:");
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    console.log(`🎯 当前提供商: ${modelConfig.provider.toUpperCase()}`);
+    console.log(`🔑 智谱 API Key: ${modelConfig.glmApiKey ? "已配置 (长度: " + modelConfig.glmApiKey.length + ")" : "未配置"}`);
+    console.log(`🌐 智谱 Base URL: ${modelConfig.glmBaseUrl}`);
+    console.log(`🔑 DeepSeek API Key: ${modelConfig.deepseekApiKey ? "已配置 (长度: " + modelConfig.deepseekApiKey.length + ")" : "未配置"}`);
+    console.log(`🌐 DeepSeek Base URL: ${modelConfig.deepseekBaseUrl}`);
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    console.log(`⚡ 预处理模型: ${modelConfig.preprocessingModel} (${preConfig.provider})`);
+    console.log(`💬 生成回答模型: ${modelConfig.generationModel} (${genConfig.provider})`);
+    console.log(`🌡️ 温度: ${modelConfig.temperature}`);
+    console.log(`📊 最大Token数: ${modelConfig.maxTokens}`);
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+  } catch (error) {
+    console.error("❌ 加载模型配置失败:", error);
+    
+    // 使用默认配置作为后备
+    modelConfig = {
+      provider: "glm",
+      glmApiKey: DEFAULT_GLM_API_KEY,
+      glmBaseUrl: DEFAULT_GLM_BASE_URL,
+      deepseekApiKey: DEFAULT_DEEPSEEK_API_KEY,
+      deepseekBaseUrl: DEFAULT_DEEPSEEK_BASE_URL,
+      preprocessingModel: process.env.GLM_MODEL || "glm-4-flash",
+      generationModel: process.env.GLM_MODEL || "glm-4-flash",
+      temperature: 0.7,
+      maxTokens: 2000,
+      embeddingModel: process.env.GLM_EMBEDDING_MODEL || "embedding-3",
+    };
+  }
+}
+
+// 获取当前配置的辅助函数
+function getConfig(): ModelConfig {
+  if (!modelConfig) {
+    // 如果还没初始化，返回默认值
+    return {
+      provider: "glm",
+      glmApiKey: DEFAULT_GLM_API_KEY,
+      glmBaseUrl: DEFAULT_GLM_BASE_URL,
+      deepseekApiKey: DEFAULT_DEEPSEEK_API_KEY,
+      deepseekBaseUrl: DEFAULT_DEEPSEEK_BASE_URL,
+      preprocessingModel: process.env.GLM_MODEL || "glm-4-flash",
+      generationModel: process.env.GLM_MODEL || "glm-4-flash",
+      temperature: 0.7,
+      maxTokens: 2000,
+      embeddingModel: process.env.GLM_EMBEDDING_MODEL || "embedding-3",
+    };
+  }
+  return modelConfig;
+}
+
+// 初始化预处理 LLM（用于关键词提取和查询改写）
+function createPreprocessingLLM() {
+  const config = getConfig();
+  const modelConfig = getModelConfig(config.preprocessingModel);
+  
+  return new ChatOpenAI({
+    openAIApiKey: modelConfig.apiKey,
+    modelName: config.preprocessingModel,
+    temperature: 0.3,
+    configuration: {
+      baseURL: modelConfig.baseURL,
+    },
+  });
+}
+
+// 初始化生成回答 LLM（用于最终回答）
+function createGenerationLLM() {
+  const config = getConfig();
+  const modelConfig = getModelConfig(config.generationModel);
+  
+  return new ChatOpenAI({
+    openAIApiKey: modelConfig.apiKey,
+    modelName: config.generationModel,
+    temperature: config.temperature,
+    streaming: true,
+    configuration: {
+      baseURL: modelConfig.baseURL,
+    },
+  });
+}
+
+// 延迟初始化的LLM实例
+let _preprocessingLLM: ChatOpenAI | null = null;
+let _generationLLM: ChatOpenAI | null = null;
+
+function getPreprocessingLLM(): ChatOpenAI {
+  if (!_preprocessingLLM) {
+    _preprocessingLLM = createPreprocessingLLM();
+  }
+  return _preprocessingLLM;
+}
+
+function getGenerationLLM(): ChatOpenAI {
+  if (!_generationLLM) {
+    _generationLLM = createGenerationLLM();
+  }
+  return _generationLLM;
 }
 
 // 格式化聊天历史
@@ -98,7 +271,7 @@ async function extractKeywords(question: string): Promise<string[]> {
 
 关键词：`;
 
-    const response = await fastLLM.invoke(keywordPrompt);
+    const response = await getPreprocessingLLM().invoke(keywordPrompt);
     const keywordsText = response.content.toString().trim();
     const keywords = keywordsText
       .split(/[,，、]/)
@@ -123,7 +296,7 @@ async function rewriteQuery(question: string): Promise<string> {
 
 优化后的查询：`;
 
-    const response = await fastLLM.invoke(rewritePrompt);
+    const response = await getPreprocessingLLM().invoke(rewritePrompt);
     const rewrittenQuery = response.content.toString().trim();
     console.log(`📝 查询改写: "${question}" → "${rewrittenQuery}"`);
     return rewrittenQuery;
@@ -207,7 +380,7 @@ ${doc.pageContent.substring(0, 800)}...
 相关性评分（0-10）：`;
 
         try {
-          const response = await llm.invoke(rerankPrompt);
+          const response = await getGenerationLLM().invoke(rerankPrompt);
           const scoreText = response.content.toString().trim();
           const score = parseFloat(scoreText);
 
@@ -321,7 +494,7 @@ export async function* ragQuery(
 
     // 7. 流式调用 LLM
     console.log("🤖 调用 LLM 模型生成回答...");
-    const stream = await llm.stream(systemPrompt);
+    const stream = await getGenerationLLM().stream(systemPrompt);
 
     for await (const chunk of stream) {
       if (chunk.content) {
@@ -339,7 +512,7 @@ export async function* ragQuery(
 }
 
 // 获取相关文档（用于显示引用来源）
-export async function getRelevantSources(question: string): Promise<string[]> {
+export async function getRelevantSources(question: string): Promise<SourceReference[]> {
   try {
     // 使用相同的优化流程
     const keywords = await extractKeywords(question);
@@ -370,10 +543,21 @@ export async function getRelevantSources(question: string): Promise<string[]> {
     // const topDocs = relevantDocs.slice(0, 4);
     const topDocs = mergedDocs.slice(0, 4); // 直接使用混合检索结果
 
-    const uniqueFilenames = [
-      ...new Set(topDocs.map((doc) => doc.metadata.filename)),
-    ];
-    return uniqueFilenames;
+    // 按文件名分组
+    const fileSet = new Set<string>();
+    
+    topDocs.forEach((doc) => {
+      fileSet.add(doc.metadata.filename);
+      console.log(`📄 文档来源: ${doc.metadata.filename}`);
+    });
+
+    // 转换为SourceReference数组
+    const sources: SourceReference[] = Array.from(fileSet).map((filename) => ({
+      filename,
+    }));
+
+    console.log("📚 处理后的来源信息:", sources);
+    return sources;
   } catch (error) {
     console.error("❌ 获取来源失败:", error);
     return [];

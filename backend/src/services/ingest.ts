@@ -27,9 +27,9 @@ async function parsePDF(filePath: string): Promise<string> {
       pages.push(text);
     }
 
-    const text = pages.join("\n");
-    console.log(`📄 PDF 解析成功: ${pdf.numPages} 页, ${text.length} 字符`);
-    return text;
+    const fullText = pages.join("\n");
+    console.log(`📄 PDF 解析成功: ${pdf.numPages} 页, ${fullText.length} 字符`);
+    return fullText;
   } catch (error) {
     console.error("❌ PDF 解析失败:", error);
     throw new Error(
@@ -75,11 +75,11 @@ export async function ingestFile(
     console.log(`📄 开始处理文件: ${filename}`);
 
     // 1. 解析文件内容
-    const content = await parseFile(filePath);
-    console.log(`✅ 文件解析完成，内容长度: ${content.length}`);
+    const text = await parseFile(filePath);
+    console.log(`✅ 文件解析完成`);
 
     // 2. 分割文本
-    const splits = await textSplitter.splitText(content);
+    const splits = await textSplitter.splitText(text);
     console.log(`✅ 文本分割完成，共 ${splits.length} 个块`);
 
     // 3. 创建文档块

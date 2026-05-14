@@ -31,7 +31,7 @@ USE_FAST_PREPROCESSING=true  # 或 false
   USE_FAST_PREPROCESSING=false  # 全程使用 glm-4-flash
   ```
 
-### glm-4.6（推荐用于高质量回答）
+### GLM-5.1（推荐用于高质量回答）
 
 - **特点**：更智能，但响应较慢（~4 秒）
 - **适用场景**：复杂问题、需要深度推理
@@ -43,17 +43,17 @@ USE_FAST_PREPROCESSING=true  # 或 false
 - **配置方案 2**：
   ```env
   GLM_MODEL=glm-4.6
-  USE_FAST_PREPROCESSING=false  # 全程使用 glm-4.6（最慢但最智能）
+  USE_FAST_PREPROCESSING=false  # 全程使用 GLM-5.1（最慢但最智能）
   ```
 
 ## USE_FAST_PREPROCESSING 说明
 
-### true（推荐用于 glm-4.6）
+### true（推荐用于 GLM-5.1）
 
 - **工作流程**：
   1. 关键词提取：使用 glm-4-flash（快速）
   2. 查询改写：使用 glm-4-flash（快速）
-  3. 最终回答：使用主模型（glm-4.6）
+  3. 最终回答：使用主模型（GLM-5.1）
 - **优点**：预处理快速，最终回答质量高
 - **响应时间**：中等（~2-3 秒开始输出）
 
@@ -63,7 +63,7 @@ USE_FAST_PREPROCESSING=true  # 或 false
 - **优点**：配置简单，一致性好
 - **响应时间**：
   - glm-4-flash：快（~1 秒）
-  - glm-4.6：慢（~4-5 秒）
+  - GLM-5.1：慢（~4-5 秒）
 
 ## 性能对比
 

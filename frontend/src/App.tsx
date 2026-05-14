@@ -2,57 +2,171 @@ import { useState, useEffect, useRef } from "react";
 import ChatMessage from "./components/ChatMessage";
 import ChatInput from "./components/ChatInput";
 import KnowledgeModal from "./components/KnowledgeModal";
-import { sendMessage, type ChatMessage as Message } from "./api";
+import ModelSettings from "./components/ModelSettings";
+import { sendMessage, type ChatMessage as Message, type SourceReference } from "./api";
 import "./test-api";
+import logo from "./assets/imgs/logo.webp";
+
+// 对话数据结构
+interface Conversation {
+  id: string;
+  title: string;
+  messages: Message[];
+  createdAt: number;
+  updatedAt: number;
+}
 
 function App() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [showKnowledgeModal, setShowKnowledgeModal] = useState(false);
+  const [showModelSettings, setShowModelSettings] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [showSidebar, setShowSidebar] = useState(true);
 
-  // 从 localStorage 加载历史
+  // 获取当前对话
+  const currentConversation = conversations.find(c => c.id === currentConversationId);
+  const currentMessages = currentConversation?.messages || [];
+
+  // 从 localStorage 加载所有对话和主题
   useEffect(() => {
-    const saved = localStorage.getItem("chatHistory");
+    const saved = localStorage.getItem("allConversations");
     if (saved) {
       try {
-        setMessages(JSON.parse(saved));
+        const loaded = JSON.parse(saved);
+        setConversations(loaded);
+        if (loaded.length > 0 && !currentConversationId) {
+          setCurrentConversationId(loaded[0].id);
+        }
       } catch (e) {
         console.error("加载历史失败", e);
       }
     }
+    
+    // 加载主题设置
+    const savedTheme = localStorage.getItem("theme");
+    if (savedTheme === "dark") {
+      setIsDarkMode(true);
+      document.documentElement.classList.add("dark");
+    }
   }, []);
 
-  // 保存历史到 localStorage
+  // 保存所有对话到 localStorage
   useEffect(() => {
-    if (messages.length > 0) {
-      localStorage.setItem("chatHistory", JSON.stringify(messages));
+    if (conversations.length > 0) {
+      localStorage.setItem("allConversations", JSON.stringify(conversations));
     }
-  }, [messages]);
+  }, [conversations]);
 
   // 自动滚动到底部
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [currentMessages]);
+
+  // 监听屏幕尺寸变化，移动端自动收起侧边栏
+  useEffect(() => {
+    const checkScreenSize = () => {
+      if (window.innerWidth < 1024) {
+        setShowSidebar(false);
+      } else {
+        setShowSidebar(true);
+      }
+    };
+
+    // 初始检查
+    checkScreenSize();
+
+    // 监听窗口大小变化
+    window.addEventListener("resize", checkScreenSize);
+
+    return () => {
+      window.removeEventListener("resize", checkScreenSize);
+    };
+  }, []);
+
+  // 生成对话标题（取第一条用户消息前15字）
+  const generateConversationTitle = (messages: Message[]): string => {
+    const firstUserMsg = messages.find(m => m.role === "user");
+    if (firstUserMsg) {
+      const title = firstUserMsg.content.substring(0, 15);
+      return title.length === 15 ? title + "..." : title;
+    }
+    return "新对话";
+  };
+
+  // 创建新对话
+  const createNewConversation = () => {
+    const newId = Date.now().toString();
+    const newConversation: Conversation = {
+      id: newId,
+      title: "新对话",
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    setConversations(prev => [newConversation, ...prev]);
+    setCurrentConversationId(newId);
+  };
+
+  // 删除对话
+  const deleteConversation = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setConversations(prev => prev.filter(c => c.id !== id));
+    if (currentConversationId === id) {
+      const remaining = conversations.filter(c => c.id !== id);
+      setCurrentConversationId(remaining.length > 0 ? remaining[0].id : null);
+    }
+  };
+
+  // 更新当前对话
+  const updateCurrentConversation = (newMessages: Message[]) => {
+    if (!currentConversationId) {
+      // 如果没有当前对话，创建一个
+      const newId = Date.now().toString();
+      const newConversation: Conversation = {
+        id: newId,
+        title: generateConversationTitle(newMessages),
+        messages: newMessages,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      setConversations(prev => [newConversation, ...prev]);
+      setCurrentConversationId(newId);
+    } else {
+      // 更新现有对话
+      setConversations(prev => prev.map(c => {
+        if (c.id === currentConversationId) {
+          return {
+            ...c,
+            messages: newMessages,
+            title: generateConversationTitle(newMessages),
+            updatedAt: Date.now(),
+          };
+        }
+        return c;
+      }));
+    }
+  };
 
   const handleSendMessage = async (content: string) => {
     if (!content.trim() || isLoading) return;
 
     const userMessage: Message = { role: "user", content };
-    setMessages((prev) => [...prev, userMessage]);
+    const newMessages = [...currentMessages, userMessage];
+    updateCurrentConversation(newMessages);
     setIsLoading(true);
 
     // 立即添加一个空的助手消息
-    setMessages((prev) => [
-      ...prev,
-      { role: "assistant", content: "", sources: [] },
-    ]);
+    const messagesWithEmpty = [...newMessages, { role: "assistant" as const, content: "", sources: [] }];
+    updateCurrentConversation(messagesWithEmpty);
 
     try {
       let assistantContent = "";
-      let sources: string[] = [];
+      let sources: SourceReference[] = [];
 
-      const stream = sendMessage(content, messages);
+      const stream = sendMessage(content, currentMessages);
 
       for await (const chunk of stream) {
         console.log("收到数据块:", chunk);
@@ -62,18 +176,14 @@ function App() {
         } else if (chunk.type === "content") {
           assistantContent += chunk.content || "";
           // 实时更新最后一条助手消息
-          setMessages((prev) => {
-            const newMessages = [...prev];
-            const lastIndex = newMessages.length - 1;
-            if (newMessages[lastIndex]?.role === "assistant") {
-              newMessages[lastIndex] = {
-                role: "assistant",
-                content: assistantContent,
-                sources,
-              };
-            }
-            return newMessages;
-          });
+          updateCurrentConversation(
+            messagesWithEmpty.map((msg, idx) => {
+              if (idx === messagesWithEmpty.length - 1 && msg.role === "assistant") {
+                return { role: "assistant", content: assistantContent, sources };
+              }
+              return msg;
+            })
+          );
         } else if (chunk.type === "error") {
           throw new Error(chunk.error);
         } else if (chunk.type === "done") {
@@ -82,96 +192,74 @@ function App() {
       }
     } catch (error) {
       console.error("发送消息失败:", error);
-      setMessages((prev) => {
-        const newMessages = [...prev];
-        const lastIndex = newMessages.length - 1;
-        if (newMessages[lastIndex]?.role === "assistant") {
-          newMessages[lastIndex] = {
-            role: "assistant",
-            content: `抱歉，出现错误: ${
-              error instanceof Error ? error.message : "未知错误"
-            }`,
-          };
-        }
-        return newMessages;
-      });
+      updateCurrentConversation(
+        currentMessages.map((msg, idx) => {
+          if (idx === currentMessages.length - 1 && msg.role === "assistant") {
+            return {
+              role: "assistant",
+              content: `抱歉，出现错误: ${error instanceof Error ? error.message : "未知错误"}`,
+            };
+          }
+          return msg;
+        })
+      );
     } finally {
       setIsLoading(false);
     }
   };
 
   const clearHistory = () => {
-    setMessages([]);
-    localStorage.removeItem("chatHistory");
+    if (currentConversationId) {
+      const updated = conversations.map(c => {
+        if (c.id === currentConversationId) {
+          return { ...c, messages: [] };
+        }
+        return c;
+      });
+      setConversations(updated);
+    }
+  };
+  
+  // 切换主题
+  const toggleTheme = () => {
+    const newDarkMode = !isDarkMode;
+    setIsDarkMode(newDarkMode);
+    if (newDarkMode) {
+      document.documentElement.classList.add("dark");
+      localStorage.setItem("theme", "dark");
+    } else {
+      document.documentElement.classList.remove("dark");
+      localStorage.setItem("theme", "light");
+    }
   };
 
   return (
-    <div className="h-screen bg-gradient-to-br from-blue-50 via-white to-blue-50 flex flex-col">
-      {/* 顶部导航栏 */}
-      <header className="border-b border-blue-100 bg-white/80 backdrop-blur-sm shadow-sm">
-        <div className="max-w-5xl mx-auto px-4 py-2.5 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 bg-gradient-to-br from-blue-600 to-blue-700 rounded-xl flex items-center justify-center shadow-md">
-              <svg
-                className="w-5 h-5 text-white"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
-                />
-              </svg>
-            </div>
-            <h1 className="text-base font-bold bg-gradient-to-r from-blue-600 to-blue-800 bg-clip-text text-transparent">
-              知识库助手
-            </h1>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowKnowledgeModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-blue-600 to-blue-700 text-white text-xs font-medium rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all shadow-sm hover:shadow-md"
-            >
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
-                />
-              </svg>
-              知识库管理
-            </button>
-
-            {messages.length > 0 && (
+    <div className={`h-screen flex transition-colors duration-300 ${isDarkMode ? 'bg-gray-900 text-white' : 'bg-gradient-to-br from-blue-50 via-white to-blue-50 text-gray-900'}`}>
+      {/* 侧边栏遮罩层（移动端） */}
+      {showSidebar && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40 lg:hidden"
+          onClick={() => setShowSidebar(false)}
+        />
+      )}
+      
+      {/* 左侧侧边栏 */}
+      {showSidebar && (
+        <div className={`fixed lg:relative z-50 w-64 sm:w-72 h-full flex flex-col transition-all duration-300 ${isDarkMode ? 'bg-gray-800 border-r border-gray-700' : 'bg-gray-50 border-r border-gray-200'}`}>
+          {/* Logo 区域 */}
+          <div className={`p-4 border-b transition-colors duration-300 ${isDarkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+            <div className="flex items-center gap-3">
+              <img src={logo} alt="知识库助手" className="w-8 sm:w-10 h-8 sm:h-10 rounded-xl shadow-md" />
+              <h1 className={`text-base sm:text-lg font-bold ${isDarkMode ? 'text-white' : 'bg-gradient-to-r from-blue-600 to-blue-800 bg-clip-text text-transparent'}`}>
+                知识库助手
+              </h1>
+              {/* 移动端关闭按钮 */}
               <button
-                onClick={clearHistory}
-                className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
+                onClick={() => setShowSidebar(false)}
+                className={`ml-auto p-2 rounded-lg lg:hidden ${isDarkMode ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-600 hover:bg-gray-100'}`}
               >
-                清空对话
-              </button>
-            )}
-          </div>
-        </div>
-      </header>
-
-      {/* 聊天区域 */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-5xl mx-auto px-4 py-4">
-          {messages.length === 0 ? (
-            <div className="text-center py-20">
-              <div className="w-16 h-16 bg-gradient-to-br from-blue-600 to-blue-700 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
                 <svg
-                  className="w-9 h-9 text-white"
+                  className="w-5 h-5"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -180,19 +268,157 @@ function App() {
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     strokeWidth={2}
-                    d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
+                    d="M6 18L18 6M6 6l12 12"
                   />
                 </svg>
-              </div>
-              <h2 className="text-xl font-bold text-gray-900 mb-2">
-                你好！我是你的知识库助手
-              </h2>
-              <p className="text-sm text-gray-500 mb-6">
-                上传文档后，我可以帮你回答相关问题
-              </p>
+              </button>
+            </div>
+          </div>
+
+          {/* 新对话按钮 */}
+          <div className="p-3 sm:p-4">
+            <button
+              onClick={createNewConversation}
+              className="w-full flex items-center justify-center gap-2 px-3 sm:px-4 py-2.5 sm:py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white text-sm sm:font-medium rounded-xl hover:from-blue-700 hover:to-blue-800 transition-all shadow-sm hover:shadow-md"
+            >
+              <svg
+                className="w-4 sm:w-5 h-4 sm:h-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M12 6v6m0 0v6m0-6h6m-6 0H6"
+                />
+              </svg>
+              新对话
+            </button>
+          </div>
+
+          {/* 历史对话列表 */}
+          <div className="flex-1 overflow-y-auto px-2">
+            <div className={`text-xs font-semibold uppercase tracking-wider px-2 py-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-400'}`}>
+              历史对话
+            </div>
+            <div className="space-y-1">
+              {conversations.map((conv) => (
+                <div
+                  key={conv.id}
+                  onClick={() => {
+                    setCurrentConversationId(conv.id);
+                    // 移动端点击对话后自动关闭侧边栏
+                    if (window.innerWidth < 1024) {
+                      setShowSidebar(false);
+                    }
+                  }}
+                  className={`group flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer transition-all ${
+                    conv.id === currentConversationId
+                      ? isDarkMode ? "bg-gray-700 shadow-sm border border-gray-600" : "bg-white shadow-sm border border-gray-200"
+                      : isDarkMode ? "hover:bg-gray-700/50" : "hover:bg-white/50 hover:border hover:border-gray-100"
+                  }`}
+                >
+                  <div className="flex-shrink-0">
+                    <svg
+                      className={`w-5 h-5 ${isDarkMode ? 'text-gray-400' : 'text-gray-400'}`}
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
+                      />
+                    </svg>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p
+                      className={`text-sm font-medium truncate ${
+                        conv.id === currentConversationId 
+                          ? (isDarkMode ? "text-white" : "text-gray-900") 
+                          : (isDarkMode ? "text-gray-300" : "text-gray-700")
+                      }`}
+                      title={conv.title}
+                    >
+                      {conv.title}
+                    </p>
+                  </div>
+                  <button
+                    onClick={(e) => deleteConversation(conv.id, e)}
+                    className={`opacity-0 group-hover:opacity-100 p-1 rounded transition-all ${isDarkMode ? 'text-gray-400 hover:text-red-400 hover:bg-red-900/30' : 'text-gray-400 hover:text-red-500 hover:bg-red-50'}`}
+                  >
+                    <svg
+                      className="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                      />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 主聊天区域 */}
+      <div className="flex-1 flex flex-col">
+        {/* 顶部导航栏 */}
+        <header className={`border-b backdrop-blur-sm shadow-sm transition-colors duration-300 ${isDarkMode ? 'bg-gray-800/80 border-gray-700' : 'bg-white/80 border-blue-100'}`}>
+          <div className="px-3 sm:px-4 py-2 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowSidebar(!showSidebar)}
+                className={`p-2 rounded-lg transition-colors ${isDarkMode ? 'text-gray-300 hover:text-white hover:bg-gray-700' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'}`}
+              >
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M4 6h16M4 12h16M4 18h16"
+                  />
+                </svg>
+              </button>
+               
+            </div>
+
+            <div className="flex items-center gap-1 sm:gap-2">
+              {/* 主题切换按钮 */}
+              <button
+                onClick={toggleTheme}
+                className={`p-2 rounded-lg transition-colors ${isDarkMode ? 'text-gray-300 hover:text-white hover:bg-gray-700' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'}`}
+                title={isDarkMode ? "切换到明亮模式" : "切换到暗夜模式"}
+              >
+                {isDarkMode ? (
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                  </svg>
+                ) : (
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                  </svg>
+                )}
+              </button>
               <button
                 onClick={() => setShowKnowledgeModal(true)}
-                className="inline-flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-blue-600 to-blue-700 text-white text-sm font-medium rounded-xl hover:from-blue-700 hover:to-blue-800 transition-all shadow-lg hover:shadow-xl"
+                className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 bg-gradient-to-r from-blue-600 to-blue-700 text-white text-xs font-medium rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all shadow-sm hover:shadow-md"
               >
                 <svg
                   className="w-4 h-4"
@@ -204,44 +430,114 @@ function App() {
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     strokeWidth={2}
-                    d="M12 6v6m0 0v6m0-6h6m-6 0H6"
+                    d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012-2v2M7 7h10"
                   />
                 </svg>
-                开始使用
+                <span className="hidden sm:inline">知识库管理</span>
               </button>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {messages.map((msg, idx) => (
-                <ChatMessage key={idx} message={msg} />
-              ))}
-              {isLoading && (
-                <div className="flex items-center gap-2 text-blue-600 text-xs">
-                  <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-blue-600"></div>
-                  <span>AI 正在思考...</span>
-                </div>
+
+              <button
+                onClick={() => setShowModelSettings(true)}
+                className={`flex items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs font-medium rounded-lg transition-all shadow-sm hover:shadow-md ${isDarkMode ? 'bg-gray-700 text-gray-300 hover:bg-gray-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                  />
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                  />
+                </svg>
+                <span className="hidden sm:inline">模型设置</span>
+              </button>
+
+              {currentMessages.length > 0 && (
+                <button
+                  onClick={clearHistory}
+                  className={`hidden sm:flex px-3 py-1.5 text-sm rounded-lg transition-colors ${isDarkMode ? 'text-gray-300 hover:text-white hover:bg-gray-700' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'}`}
+                >
+                  清空对话
+                </button>
               )}
-              <div ref={messagesEndRef} />
             </div>
-          )}
-        </div>
-      </div>
+          </div>
+        </header>
 
-      {/* 输入框 */}
-      <div className="border-t border-blue-100 bg-white/80 backdrop-blur-sm">
-        <div className="max-w-5xl mx-auto px-4 py-3">
-          <ChatInput onSend={handleSendMessage} disabled={isLoading} />
+        {/* 聊天区域 */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-5xl mx-auto px-3 sm:px-4 py-3 sm:py-4">
+            {currentMessages.length === 0 ? (
+              <div className="text-center py-16 sm:py-20">
+                <div className="w-14 sm:w-16 h-14 sm:h-16 bg-gradient-to-br from-blue-600 to-blue-700 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
+                  <svg
+                    className="w-7 sm:w-9 h-7 sm:h-9 text-white"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
+                    />
+                  </svg>
+                </div>
+                <h2 className={`text-lg sm:text-xl font-bold mb-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                  你好！我是你的知识库助手
+                </h2>
+                <p className={`text-sm mb-6 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                  上传文档后，我可以帮你回答相关问题
+                </p>
+                
+              </div>
+            ) : (
+              <div className="space-y-2 sm:space-y-3">
+                {currentMessages.map((msg, idx) => (
+                  <ChatMessage key={idx} message={msg} isDarkMode={isDarkMode} />
+                ))}
+                {isLoading && (
+                  <div className={`flex items-center gap-2 text-xs ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+                    <div className={`animate-spin rounded-full h-3 w-3 border-b-2 ${isDarkMode ? 'border-blue-400' : 'border-blue-600'}`}></div>
+                    <span>AI 正在思考...</span>
+                  </div>
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+            )}
+          </div>
         </div>
-      </div>
 
-      {/* 知识库管理弹窗 */}
-      <KnowledgeModal
-        isOpen={showKnowledgeModal}
-        onClose={() => setShowKnowledgeModal(false)}
-        onSuccess={() => {
-          // 上传成功后的回调
-        }}
-      />
+        {/* 输入框 */}
+        <div className={`border-t backdrop-blur-sm transition-colors duration-300 ${isDarkMode ? 'bg-gray-800/80 border-gray-700' : 'bg-white/80 border-blue-100'}`}>
+          <div className="max-w-5xl mx-auto px-3 sm:px-4 py-2.5 sm:py-3">
+            <ChatInput onSend={handleSendMessage} disabled={isLoading} isDarkMode={isDarkMode} />
+          </div>
+        </div>
+
+        {/* 知识库管理弹窗 */}
+        <KnowledgeModal
+          isOpen={showKnowledgeModal}
+          onClose={() => setShowKnowledgeModal(false)}
+        />
+
+        {/* 模型设置弹窗 */}
+        <ModelSettings
+          isOpen={showModelSettings}
+          onClose={() => setShowModelSettings(false)}
+        />
+      </div>
     </div>
   );
 }

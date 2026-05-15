@@ -2,11 +2,12 @@ import { useState, KeyboardEvent } from "react";
 
 interface Props {
   onSend: (message: string) => void;
+  onStop?: () => void;
   disabled?: boolean;
   isDarkMode?: boolean;
 }
 
-export default function ChatInput({ onSend, disabled, isDarkMode = false }: Props) {
+export default function ChatInput({ onSend, onStop, disabled, isDarkMode = false }: Props) {
   const [input, setInput] = useState("");
 
   const handleSend = () => {
@@ -36,16 +37,23 @@ export default function ChatInput({ onSend, disabled, isDarkMode = false }: Prop
             ? 'bg-gray-700 border-gray-600 text-gray-100 placeholder-gray-500 focus:ring-blue-400 disabled:bg-gray-800'
             : 'bg-white border-blue-100 text-gray-900 placeholder-gray-400 focus:ring-blue-500 disabled:bg-gray-50'
         }`}
-        rows={1}
+        rows={2}
         style={{ minHeight: "42px", maxHeight: "160px" }}
       />
       <button
-        onClick={handleSend}
-        disabled={disabled || !input.trim()}
-        className="absolute right-1.5 sm:right-2 bottom-1.5 sm:bottom-2 w-8 h-8 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed text-white rounded-lg transition-all flex items-center justify-center shadow-md hover:shadow-lg"
+        onClick={disabled && onStop ? onStop : handleSend}
+        disabled={disabled && !onStop ? true : !input.trim() && !disabled}
+        className={`absolute right-1.5 sm:right-2 bottom-1.5 sm:bottom-2 w-8 h-8 rounded-lg transition-all flex items-center justify-center shadow-md hover:shadow-lg ${
+          disabled
+            ? 'bg-red-500 hover:bg-red-600 text-white'
+            : 'bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed text-white'
+        }`}
+        title={disabled ? "停止生成" : "发送"}
       >
         {disabled ? (
-          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" />
+          </svg>
         ) : (
           <svg
             className="w-4 h-4"

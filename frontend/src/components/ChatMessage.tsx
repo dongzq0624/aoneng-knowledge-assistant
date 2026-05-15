@@ -8,6 +8,8 @@ import type { ChatMessage as Message, SourceReference } from "../api";
 interface Props {
   message: Message;
   isDarkMode?: boolean;
+  onDelete?: () => void;
+  isStreaming?: boolean;
 }
 
 // 代码块组件
@@ -173,8 +175,19 @@ function ImageComponent({ src, alt, isDarkMode }: { src: string; alt: string; is
   );
 }
 
-export default function ChatMessage({ message, isDarkMode = false }: Props) {
+export default function ChatMessage({ message, isDarkMode = false, onDelete, isStreaming = false }: Props) {
   const isUser = message.role === "user";
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (error) {
+      console.error("复制失败:", error);
+    }
+  };
 
   return (
     <div className={`flex gap-2 ${isUser ? "justify-end" : "justify-start"}`}>
@@ -187,7 +200,7 @@ export default function ChatMessage({ message, isDarkMode = false }: Props) {
       {/* 消息内容 */}
       <div
         className={`flex-1 space-y-1 ${
-          isUser ? "flex flex-col items-end" : ""
+          isUser ? "flex flex-col items-end group" : "group"
         }`}
       >
         <div
@@ -195,12 +208,12 @@ export default function ChatMessage({ message, isDarkMode = false }: Props) {
             isUser
               ? "bg-gradient-to-br from-blue-600 to-blue-700 text-white rounded-2xl px-3 sm:px-4 py-2 sm:py-2.5 shadow-md"
               : isDarkMode
-              ? "bg-gray-700 text-gray-100 rounded-xl p-2.5 sm:p-3 shadow-sm border border-gray-600"
-              : "bg-white text-gray-900 rounded-xl p-2.5 sm:p-3 shadow-sm border border-blue-50"
+              ? "bg-gray-700 text-gray-100 rounded-xl p-2.5 sm:p-3 shadow-sm border border-gray-600 relative"
+              : "bg-white text-gray-900 rounded-xl p-2.5 sm:p-3 shadow-sm border border-blue-50 relative"
           }`}
         >
           {isUser ? (
-            <div className="text-sm whitespace-pre-wrap break-words leading-relaxed">
+            <div className="text-sm  whitespace-pre-wrap break-words leading-relaxed">
               {message.content}
             </div>
           ) : (
@@ -329,22 +342,119 @@ export default function ChatMessage({ message, isDarkMode = false }: Props) {
           )}
         </div>
 
-        {/* 引用来源 */}
-        {!isUser && message.sources && message.sources.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mt-1.5">
-            <span className={`text-xs ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>📚</span>
-            {message.sources.map((source, idx) => (
-              <span
-                key={idx}
-                className={`text-xs px-2 py-0.5 rounded-md transition-colors cursor-pointer border ${
+        {/* 用户消息的操作按钮 - 显示在下方 */}
+        {isUser && (
+          <div className="flex items-center justify-end gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            {/* 复制按钮 */}
+            <button
+              onClick={handleCopy}
+              className={`p-1.5 rounded-lg transition-all ${
+                isDarkMode
+                  ? 'text-white/80 hover:text-white hover:bg-white/20'
+                  : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200'
+              }`}
+              title="复制"
+            >
+              {copied ? (
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+              )}
+            </button>
+            
+            {/* 删除按钮 */}
+            {onDelete && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete();
+                }}
+                className={`p-1.5 rounded-lg transition-all ${
                   isDarkMode
-                    ? 'bg-gray-800 hover:bg-gray-700 text-blue-400 border-gray-700'
-                    : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-100'
+                    ? 'text-white/80 hover:text-red-300 hover:bg-white/20'
+                    : 'text-gray-500 hover:text-red-500 hover:bg-red-50'
                 }`}
+                title="删除"
               >
-                {formatSource(source)}
-              </span>
-            ))}
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* 引用来源和操作按钮 */}
+        {!isUser && (
+          <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+            {/* 操作按钮 - 放在最前面，流式输出中不显示 */}
+            {!isStreaming && (
+              <div className="flex items-center gap-1">
+                {/* 复制按钮 */}
+                <button
+                  onClick={handleCopy}
+                  className={`p-1 rounded-lg transition-all ${
+                    isDarkMode
+                      ? 'text-gray-400 hover:text-gray-200 hover:bg-gray-600'
+                      : 'text-gray-400 hover:text-gray-700 hover:bg-gray-100'
+                  }`}
+                  title="复制"
+                >
+                  {copied ? (
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                  ) : (
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  )}
+                </button>
+                
+                {/* 删除按钮 */}
+                {onDelete && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDelete();
+                    }}
+                    className={`p-1 rounded-lg transition-all ${
+                      isDarkMode
+                        ? 'text-gray-400 hover:text-red-400 hover:bg-red-900/30'
+                        : 'text-gray-400 hover:text-red-500 hover:bg-red-50'
+                    }`}
+                    title="删除"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* 引用来源 */}
+            {message.sources && message.sources.length > 0 && (
+              <>
+                <span className={`text-xs ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>📚</span>
+                {message.sources.map((source, idx) => (
+                  <span
+                    key={idx}
+                    className={`text-xs px-2 py-0.5 rounded-md transition-colors cursor-pointer border ${
+                      isDarkMode
+                        ? 'bg-gray-800 hover:bg-gray-700 text-blue-400 border-gray-700'
+                        : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-100'
+                    }`}
+                  >
+                    {formatSource(source)}
+                  </span>
+                ))}
+              </>
+            )}
           </div>
         )}
       </div>

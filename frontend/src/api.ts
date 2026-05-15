@@ -37,7 +37,8 @@ export async function uploadFile(file: File): Promise<{
 // 发送聊天消息（流式）
 export async function* sendMessage(
   message: string,
-  history: ChatMessage[]
+  history: ChatMessage[],
+  signal?: AbortSignal
 ): AsyncGenerator<{
   type: string;
   content?: string;
@@ -53,6 +54,7 @@ export async function* sendMessage(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ message, history }),
+    signal,
   });
 
   console.log("📡 响应状态:", response.status);

@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 dotenv.config(); // 确保环境变量已加载
 
 import { ChatOpenAI } from "@langchain/openai";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import fs from "fs/promises";
 import path from "path";
 import { vectorStore } from "./vectorstore.js";
@@ -13,13 +14,17 @@ const DEFAULT_GLM_API_KEY = process.env.GLM_API_KEY || "";
 const DEFAULT_GLM_BASE_URL = process.env.GLM_BASE_URL || "https://open.bigmodel.cn/api/paas/v4";
 const DEFAULT_DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || "";
 const DEFAULT_DEEPSEEK_BASE_URL = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1";
+const DEFAULT_QWEN_API_KEY = process.env.QWEN_API_KEY || "";
+const DEFAULT_QWEN_BASE_URL = process.env.QWEN_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1";
 
 interface ModelConfig {
-  provider: "glm" | "deepseek";
+  provider: "glm" | "deepseek" | "qwen";
   glmApiKey: string;
   glmBaseUrl: string;
   deepseekApiKey: string;
   deepseekBaseUrl: string;
+  qwenApiKey: string;
+  qwenBaseUrl: string;
   preprocessingModel: string;
   generationModel: string;
   temperature: number;
@@ -28,11 +33,14 @@ interface ModelConfig {
 }
 
 // 判断模型属于哪个提供商
-function getModelProvider(modelName: string): "glm" | "deepseek" {
+function getModelProvider(modelName: string): "glm" | "deepseek" | "qwen" {
   if (modelName.startsWith("deepseek") || modelName.startsWith("ds-")) {
     return "deepseek";
   }
-  return "glm"; // 默认为智谱
+  if (modelName.startsWith("qwen") || modelName.startsWith("text-embedding")) {
+    return "qwen";
+  }
+  return "glm";
 }
 
 // 根据模型名称获取对应的配置（使用配置文件中的值）
@@ -44,6 +52,14 @@ function getModelConfig(modelName: string) {
       apiKey: modelConfig?.deepseekApiKey || DEFAULT_DEEPSEEK_API_KEY,
       baseURL: modelConfig?.deepseekBaseUrl || DEFAULT_DEEPSEEK_BASE_URL,
       provider: "DeepSeek" as const,
+    };
+  }
+  
+  if (provider === "qwen") {
+    return {
+      apiKey: modelConfig?.qwenApiKey || DEFAULT_QWEN_API_KEY,
+      baseURL: modelConfig?.qwenBaseUrl || DEFAULT_QWEN_BASE_URL,
+      provider: "千问Qwen" as const,
     };
   }
   
@@ -63,7 +79,6 @@ async function loadModelConfig(): Promise<ModelConfig> {
     
     console.log("✅ 已加载模型配置文件");
     
-    // 兼容旧配置格式
     if (config.model || config.preprocessingModel) {
       return {
         provider: config.provider || "glm",
@@ -71,6 +86,8 @@ async function loadModelConfig(): Promise<ModelConfig> {
         glmBaseUrl: config.glmBaseUrl || DEFAULT_GLM_BASE_URL,
         deepseekApiKey: config.deepseekApiKey || DEFAULT_DEEPSEEK_API_KEY,
         deepseekBaseUrl: config.deepseekBaseUrl || DEFAULT_DEEPSEEK_BASE_URL,
+        qwenApiKey: config.qwenApiKey || DEFAULT_QWEN_API_KEY,
+        qwenBaseUrl: config.qwenBaseUrl || DEFAULT_QWEN_BASE_URL,
         preprocessingModel: config.preprocessingModel || config.model || process.env.GLM_MODEL || "glm-4-flash",
         generationModel: config.generationModel || config.model || process.env.GLM_MODEL || "glm-4-flash",
         temperature: config.temperature || 0.7,
@@ -85,6 +102,8 @@ async function loadModelConfig(): Promise<ModelConfig> {
       glmBaseUrl: config.glmBaseUrl || DEFAULT_GLM_BASE_URL,
       deepseekApiKey: config.deepseekApiKey || DEFAULT_DEEPSEEK_API_KEY,
       deepseekBaseUrl: config.deepseekBaseUrl || DEFAULT_DEEPSEEK_BASE_URL,
+      qwenApiKey: config.qwenApiKey || DEFAULT_QWEN_API_KEY,
+      qwenBaseUrl: config.qwenBaseUrl || DEFAULT_QWEN_BASE_URL,
       preprocessingModel: config.preprocessingModel || process.env.GLM_MODEL || "glm-4-flash",
       generationModel: config.generationModel || process.env.GLM_MODEL || "glm-4-flash",
       temperature: config.temperature || 0.7,
@@ -94,7 +113,6 @@ async function loadModelConfig(): Promise<ModelConfig> {
   } catch (error) {
     console.log("⚠️ 未找到模型配置文件，使用默认配置");
     
-    // 兼容旧格式
     if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
       return {
         provider: "glm" as const,
@@ -102,6 +120,8 @@ async function loadModelConfig(): Promise<ModelConfig> {
         glmBaseUrl: DEFAULT_GLM_BASE_URL,
         deepseekApiKey: DEFAULT_DEEPSEEK_API_KEY,
         deepseekBaseUrl: DEFAULT_DEEPSEEK_BASE_URL,
+        qwenApiKey: DEFAULT_QWEN_API_KEY,
+        qwenBaseUrl: DEFAULT_QWEN_BASE_URL,
         preprocessingModel: process.env.GLM_MODEL || "glm-4-flash",
         generationModel: process.env.GLM_MODEL || "glm-4-flash",
         temperature: 0.7,
@@ -133,11 +153,14 @@ export async function initializeModels(): Promise<void> {
     console.log(`🌐 智谱 Base URL: ${modelConfig.glmBaseUrl}`);
     console.log(`🔑 DeepSeek API Key: ${modelConfig.deepseekApiKey ? "已配置 (长度: " + modelConfig.deepseekApiKey.length + ")" : "未配置"}`);
     console.log(`🌐 DeepSeek Base URL: ${modelConfig.deepseekBaseUrl}`);
+    console.log(`🔑 千问 API Key: ${modelConfig.qwenApiKey ? "已配置 (长度: " + modelConfig.qwenApiKey.length + ")" : "未配置"}`);
+    console.log(`🌐 千问 Base URL: ${modelConfig.qwenBaseUrl}`);
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     console.log(`⚡ 预处理模型: ${modelConfig.preprocessingModel} (${preConfig.provider})`);
     console.log(`💬 生成回答模型: ${modelConfig.generationModel} (${genConfig.provider})`);
     console.log(`🌡️ 温度: ${modelConfig.temperature}`);
     console.log(`📊 最大Token数: ${modelConfig.maxTokens}`);
+    console.log(`🧩 嵌入模型: ${modelConfig.embeddingModel}`);
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
   } catch (error) {
     console.error("❌ 加载模型配置失败:", error);
@@ -149,6 +172,8 @@ export async function initializeModels(): Promise<void> {
       glmBaseUrl: DEFAULT_GLM_BASE_URL,
       deepseekApiKey: DEFAULT_DEEPSEEK_API_KEY,
       deepseekBaseUrl: DEFAULT_DEEPSEEK_BASE_URL,
+      qwenApiKey: DEFAULT_QWEN_API_KEY,
+      qwenBaseUrl: DEFAULT_QWEN_BASE_URL,
       preprocessingModel: process.env.GLM_MODEL || "glm-4-flash",
       generationModel: process.env.GLM_MODEL || "glm-4-flash",
       temperature: 0.7,
@@ -161,13 +186,14 @@ export async function initializeModels(): Promise<void> {
 // 获取当前配置的辅助函数
 function getConfig(): ModelConfig {
   if (!modelConfig) {
-    // 如果还没初始化，返回默认值
     return {
       provider: "glm",
       glmApiKey: DEFAULT_GLM_API_KEY,
       glmBaseUrl: DEFAULT_GLM_BASE_URL,
       deepseekApiKey: DEFAULT_DEEPSEEK_API_KEY,
       deepseekBaseUrl: DEFAULT_DEEPSEEK_BASE_URL,
+      qwenApiKey: DEFAULT_QWEN_API_KEY,
+      qwenBaseUrl: DEFAULT_QWEN_BASE_URL,
       preprocessingModel: process.env.GLM_MODEL || "glm-4-flash",
       generationModel: process.env.GLM_MODEL || "glm-4-flash",
       temperature: 0.7,
@@ -193,15 +219,18 @@ function createPreprocessingLLM() {
   });
 }
 
-// 初始化生成回答 LLM（用于最终回答）
+// 初始化生成回答 LLM（用于最终回答，支持多模态）
 function createGenerationLLM() {
   const config = getConfig();
   const modelConfig = getModelConfig(config.generationModel);
+  
+  const isMultimodal = config.generationModel.includes("vl") || config.generationModel.includes("vision") || config.generationModel === "glm-4v-flash";
   
   return new ChatOpenAI({
     openAIApiKey: modelConfig.apiKey,
     modelName: config.generationModel,
     temperature: config.temperature,
+    maxTokens: config.maxTokens,
     streaming: true,
     configuration: {
       baseURL: modelConfig.baseURL,
@@ -465,36 +494,62 @@ export async function* ragQuery(
     // const relevantDocs = await rerankDocuments(question, mergedDocs);
     const relevantDocs = mergedDocs; // 直接使用混合检索结果
 
-    // 5. 构建上下文（最多使用 top 4，增加一个以提供更多信息）
+    // 5. 构建上下文（最多使用 top 4）
     const topDocs = relevantDocs.slice(0, 4);
+    
+    const images: string[] = [];
+    
     const context =
       topDocs.length > 0
         ? topDocs
-            .map(
-              (doc, i) =>
-                `[文档${i + 1}: ${doc.metadata.filename}]\n${doc.pageContent}`
-            )
+            .map((doc, i) => {
+              if ((doc.metadata.type === "image" || doc.metadata.type === "page") && doc.imageContent) {
+                images.push(doc.imageContent);
+                return `[页面图${images.length}: ${doc.metadata.filename}]\n页面多模态解读: ${doc.pageContent}`;
+              }
+              return `[文档${i + 1}: ${doc.metadata.filename}]\n${doc.pageContent}`;
+            })
             .join("\n\n---\n\n")
         : "暂无相关文档";
 
-    // 显示检索到的文档来源
     const sources = [...new Set(topDocs.map((d) => d.metadata.filename))];
     console.log(
-      `✅ 最终使用 ${topDocs.length} 个高质量文档块，来自: ${sources.join(
-        ", "
-      )}`
+      `✅ 最终使用 ${topDocs.length} 个文档块 (含 ${images.length} 张图片)，来自: ${sources.join(", ")}`
     );
 
-    // 6. 构建提示词
-    const systemPrompt = buildRAGPrompt(
+    // 6. 构建提示词，图片描述已内嵌到上下文中
+    const systemPromptText = buildRAGPrompt(
       context,
       formatHistory(history),
       question
     );
 
-    // 7. 流式调用 LLM
+    // 7. 构建多模态 Message：文本上下文 + 原始图片（让视觉模型能看图回答）
+    const messageContent: any[] = [
+      { type: "text", text: systemPromptText }
+    ];
+
+    images.forEach(imgUrl => {
+      messageContent.push({
+        type: "image_url",
+        image_url: { url: imgUrl }
+      });
+    });
+
+    const messages = [
+      new HumanMessage({ content: messageContent })
+    ];
+
+    // 8. 先将图片数据发给前端（用于图文联动展示）
     console.log("🤖 调用 LLM 模型生成回答...");
-    const stream = await getGenerationLLM().stream(systemPrompt);
+    
+    if (images.length > 0) {
+      const imagesJson = JSON.stringify(images);
+      yield `[IMAGES_DATA]${imagesJson}[/IMAGES_DATA]`;
+    }
+
+    // 9. 流式调用 LLM
+    const stream = await getGenerationLLM().stream(messages);
 
     for await (const chunk of stream) {
       if (chunk.content) {

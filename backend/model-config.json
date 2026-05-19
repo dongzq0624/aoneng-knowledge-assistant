@@ -1,12 +1,16 @@
 {
-  "provider": "deepseek",
+  "provider": "qwen",
   "glmApiKey": "44dd718b5ea04cde8db8272baffae4f6.pJwF3uFRihaRPFOG",
   "glmBaseUrl": "https://open.bigmodel.cn/api/paas/v4",
   "deepseekApiKey": "sk-f3e2a86d8eb34f519eabe9fa84435024",
   "deepseekBaseUrl": "https://api.deepseek.com/v1",
-  "preprocessingModel": "deepseek-v4-flash",
-  "generationModel": "deepseek-v4-flash",
+  "qwenApiKey": "sk-fea8e3a74afc487096ad0b72fffb976f",
+  "qwenBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "preprocessingModel": "qwen-plus",
+  "generationModel": "qwen-vl-plus",
+  "visionModel": "qwen-vl-plus",
+  "visionMaxTokens": 1800,
   "temperature": 0.1,
-  "maxTokens": 2560,
-  "embeddingModel": "deepseek-text-embedding-v1"
+  "maxTokens": 2048,
+  "embeddingModel": "text-embedding-v4"
 }

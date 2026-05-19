@@ -179,6 +179,24 @@ export default function ChatMessage({ message, isDarkMode = false, onDelete, isS
   const isUser = message.role === "user";
   const [copied, setCopied] = useState(false);
 
+  // 解析并提取图片数据
+  let textContent = message.content;
+  let images: string[] = [];
+  
+  if (!isUser && textContent) {
+    // 匹配 [IMAGES_DATA]...[/IMAGES_DATA] 标记
+    const match = textContent.match(/\[IMAGES_DATA\](.*?)\[\/IMAGES_DATA\]/);
+    if (match) {
+      try {
+        images = JSON.parse(match[1]);
+        // 从正文中移除图片数据标记
+        textContent = textContent.replace(/\[IMAGES_DATA\].*?\[\/IMAGES_DATA\]/, "");
+      } catch (e) {
+        console.error("解析图片数据失败", e);
+      }
+    }
+  }
+
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(message.content);
@@ -214,12 +232,13 @@ export default function ChatMessage({ message, isDarkMode = false, onDelete, isS
         >
           {isUser ? (
             <div className="text-sm  whitespace-pre-wrap break-words leading-relaxed">
-              {message.content}
+              {textContent}
             </div>
           ) : (
             <div className="text-sm prose prose-sm max-w-none prose-headings:mt-3 prose-headings:mb-2 prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5">
-              {message.content ? (
-                <ReactMarkdown
+              {textContent ? (
+                <>
+                  <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
                   components={{
                     table: ({ node, ...props }) => (
@@ -333,8 +352,23 @@ export default function ChatMessage({ message, isDarkMode = false, onDelete, isS
                     ),
                   }}
                 >
-                  {cleanMarkdownContent(message.content)}
+                  {cleanMarkdownContent(textContent)}
                 </ReactMarkdown>
+                {/* 渲染随文本一起返回的内联图片 */}
+                {images.length > 0 && (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {images.map((src, idx) => (
+                      <div key={idx} className="w-full max-w-[300px]">
+                        <ImageComponent
+                          src={src}
+                          alt={`检索到的图片 ${idx + 1}`}
+                          isDarkMode={isDarkMode}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                </>
               ) : (
                 <span className={`italic ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>正在输入...</span>
               )}

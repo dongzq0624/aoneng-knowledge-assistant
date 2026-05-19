@@ -1,11 +1,13 @@
 import { useState, useEffect } from "react";
 
 interface ModelConfig {
-  provider: "glm" | "deepseek";
+  provider: "glm" | "deepseek" | "qwen";
   glmApiKey: string;
   glmBaseUrl: string;
   deepseekApiKey: string;
   deepseekBaseUrl: string;
+  qwenApiKey: string;
+  qwenBaseUrl: string;
   preprocessingModel: string;
   generationModel: string;
   temperature: number;
@@ -17,13 +19,13 @@ interface ChatModelOption {
   id: string;
   name: string;
   description: string;
-  provider: "glm" | "deepseek";
+  provider: "glm" | "deepseek" | "qwen";
 }
 
 interface EmbeddingModelOption {
   id: string;
   name: string;
-  provider: "glm" | "deepseek";
+  provider: "glm" | "deepseek" | "qwen";
 }
 
 interface ModelSettingsProps {
@@ -38,6 +40,8 @@ export default function ModelSettings({ isOpen, onClose }: ModelSettingsProps) {
     glmBaseUrl: "https://open.bigmodel.cn/api/paas/v4",
     deepseekApiKey: "",
     deepseekBaseUrl: "https://api.deepseek.com/v1",
+    qwenApiKey: "",
+    qwenBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     preprocessingModel: "glm-4-flash",
     generationModel: "glm-4-flash",
     temperature: 0.7,
@@ -50,9 +54,10 @@ export default function ModelSettings({ isOpen, onClose }: ModelSettingsProps) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [showApiKeys, setShowApiKeys] = useState<{ glm: boolean; deepseek: boolean }>({
+  const [showApiKeys, setShowApiKeys] = useState<{ glm: boolean; deepseek: boolean; qwen: boolean }>({
     glm: false,
     deepseek: false,
+    qwen: false,
   });
 
   useEffect(() => {
@@ -69,7 +74,6 @@ export default function ModelSettings({ isOpen, onClose }: ModelSettingsProps) {
       const data = await response.json();
       
       if (data.success) {
-        // 兼容旧配置格式
         if (data.data.model || data.data.preprocessingModel) {
           setConfig({
             provider: data.data.provider || "glm",
@@ -77,6 +81,8 @@ export default function ModelSettings({ isOpen, onClose }: ModelSettingsProps) {
             glmBaseUrl: data.data.glmBaseUrl || "https://open.bigmodel.cn/api/paas/v4",
             deepseekApiKey: data.data.deepseekApiKey || "",
             deepseekBaseUrl: data.data.deepseekBaseUrl || "https://api.deepseek.com/v1",
+            qwenApiKey: data.data.qwenApiKey || "",
+            qwenBaseUrl: data.data.qwenBaseUrl || "https://dashscope.aliyuncs.com/compatible-mode/v1",
             preprocessingModel: data.data.preprocessingModel || data.data.model || "glm-4-flash",
             generationModel: data.data.generationModel || data.data.model || "glm-4-flash",
             temperature: data.data.temperature || 0.7,
@@ -115,8 +121,9 @@ export default function ModelSettings({ isOpen, onClose }: ModelSettingsProps) {
       setMessage(null);
       
       // 验证必填字段
-      if (!config[`${config.provider}ApiKey`]) {
-        setMessage({ type: 'error', text: `请输入${config.provider === 'glm' ? '智谱GLM' : 'DeepSeek'}的 API Key` });
+      if (!config[`${config.provider}ApiKey` as keyof ModelConfig]) {
+        const providerNames: Record<string, string> = { glm: "智谱GLM", deepseek: "DeepSeek", qwen: "千问Qwen" };
+        setMessage({ type: 'error', text: `请输入${providerNames[config.provider]}的 API Key` });
         return;
       }
       
@@ -153,20 +160,25 @@ export default function ModelSettings({ isOpen, onClose }: ModelSettingsProps) {
   // 根据当前提供商过滤嵌入模型
   const filteredEmbeddingModels = embeddingModels.filter(model => model.provider === config.provider);
 
-  // 切换提供商时自动选择该提供商的第一个模型和嵌入模型
-  function handleProviderChange(provider: "glm" | "deepseek") {
+  function handleProviderChange(provider: "glm" | "deepseek" | "qwen") {
     const providerModels = chatModels.filter(m => m.provider === provider);
     const providerEmbeddingModels = embeddingModels.filter(m => m.provider === provider);
     
     const firstModel = providerModels[0];
     const firstEmbeddingModel = providerEmbeddingModels[0];
     
+    const defaultModels: Record<string, { chat: string; embedding: string }> = {
+      glm: { chat: "glm-4-flash", embedding: "embedding-3" },
+      deepseek: { chat: "deepseek-v4-flash", embedding: "deepseek-text-embedding-v1" },
+      qwen: { chat: "qwen-plus", embedding: "text-embedding-v4" },
+    };
+    
     setConfig({
       ...config,
       provider,
-      preprocessingModel: firstModel?.id || (provider === "glm" ? "glm-4-flash" : "deepseek-v4-flash"),
-      generationModel: firstModel?.id || (provider === "glm" ? "glm-4-flash" : "deepseek-v4-flash"),
-      embeddingModel: firstEmbeddingModel?.id || (provider === "glm" ? "embedding-3" : "deepseek-text-embedding-v1"),
+      preprocessingModel: firstModel?.id || defaultModels[provider].chat,
+      generationModel: firstModel?.id || defaultModels[provider].chat,
+      embeddingModel: firstEmbeddingModel?.id || defaultModels[provider].embedding,
     });
   }
 
@@ -210,7 +222,7 @@ export default function ModelSettings({ isOpen, onClose }: ModelSettingsProps) {
                   选择模型提供商
                 </label>
                 
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-3 gap-3">
                   {/* 智谱 GLM */}
                   <button
                     onClick={() => handleProviderChange("glm")}
@@ -258,6 +270,30 @@ export default function ModelSettings({ isOpen, onClose }: ModelSettingsProps) {
                       )}
                     </div>
                   </button>
+
+                  {/* 千问 Qwen */}
+                  <button
+                    onClick={() => handleProviderChange("qwen")}
+                    className={`p-4 rounded-lg border-2 transition-all ${
+                      config.provider === "qwen"
+                        ? "border-purple-500 bg-purple-50 dark:bg-purple-900/30 shadow-md"
+                        : "border-gray-300 dark:border-gray-600 hover:border-purple-300"
+                    }`}
+                  >
+                    <div className="text-center">
+                      <div className={`text-lg font-bold mb-1 ${config.provider === "qwen" ? "text-purple-600" : "text-gray-700 dark:text-gray-300"}`}>
+                        千问 Qwen
+                      </div>
+                      <div className={`text-xs ${config.provider === "qwen" ? "text-purple-500" : "text-gray-500"}`}>
+                        多模态理解
+                      </div>
+                      {config.provider === "qwen" && (
+                        <svg className="w-5 h-5 mx-auto mt-2 text-purple-600" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                        </svg>
+                      )}
+                    </div>
+                  </button>
                 </div>
               </div>
 
@@ -267,11 +303,11 @@ export default function ModelSettings({ isOpen, onClose }: ModelSettingsProps) {
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
                   </svg>
-                  {config.provider === "glm" ? "智谱 GLM API 密钥" : "DeepSeek API 密钥"}（必填）
+                  {config.provider === "glm" ? "智谱 GLM API 密钥" : config.provider === "qwen" ? "千问 Qwen API 密钥" : "DeepSeek API 密钥"}（必填）
                 </label>
 
                 {/* 根据提供商显示对应的 API Key 输入框 */}
-                {config.provider === "glm" ? (
+                {config.provider === "glm" && (
                   <div className="space-y-2 p-3 bg-white dark:bg-gray-700 rounded-md border border-blue-200 dark:border-blue-700">
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm font-medium text-blue-700 dark:text-blue-300 flex items-center gap-1">
@@ -304,7 +340,9 @@ export default function ModelSettings({ isOpen, onClose }: ModelSettingsProps) {
                       />
                     </div>
                   </div>
-                ) : (
+                )}
+
+                {config.provider === "deepseek" && (
                   <div className="space-y-2 p-3 bg-white dark:bg-gray-700 rounded-md border border-green-200 dark:border-green-700">
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm font-medium text-green-700 dark:text-green-300 flex items-center gap-1">
@@ -339,11 +377,46 @@ export default function ModelSettings({ isOpen, onClose }: ModelSettingsProps) {
                   </div>
                 )}
 
+                {config.provider === "qwen" && (
+                  <div className="space-y-2 p-3 bg-white dark:bg-gray-700 rounded-md border border-purple-200 dark:border-purple-700">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-medium text-purple-700 dark:text-purple-300 flex items-center gap-1">
+                        <span className="inline-block w-2 h-2 bg-purple-500 rounded-full"></span>
+                        千问 Qwen API Key
+                      </span>
+                      <button
+                        onClick={() => setShowApiKeys({ ...showApiKeys, qwen: !showApiKeys.qwen })}
+                        className="text-xs px-2 py-1 bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300 rounded hover:bg-purple-200 dark:hover:bg-purple-800 transition-colors"
+                      >
+                        {showApiKeys.qwen ? "隐藏" : "显示"}
+                      </button>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <input
+                        type={showApiKeys.qwen ? "text" : "password"}
+                        placeholder="请输入千问 Qwen API Key (DashScope)"
+                        value={config.qwenApiKey}
+                        onChange={(e) => setConfig({ ...config, qwenApiKey: e.target.value })}
+                        className="w-full px-3 py-2 border border-purple-300 dark:border-purple-600 rounded-md focus:ring-2 focus:ring-purple-500 bg-white dark:bg-gray-800 text-sm"
+                      />
+                      
+                      <input
+                        type="text"
+                        placeholder="Base URL (默认: https://dashscope.aliyuncs.com/compatible-mode/v1)"
+                        value={config.qwenBaseUrl}
+                        onChange={(e) => setConfig({ ...config, qwenBaseUrl: e.target.value })}
+                        className="w-full px-3 py-2 border border-purple-200 dark:border-purple-500 rounded-md focus:ring-2 focus:ring-purple-400 bg-white dark:bg-gray-800 text-xs"
+                      />
+                    </div>
+                  </div>
+                )}
+
                 <p className="text-xs text-red-600 dark:text-red-400 flex items-start gap-1">
                   <svg className="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
                   </svg>
-                  请填写{config.provider === "glm" ? "智谱GLM" : "DeepSeek"}的 API Key。保存后需重启后端服务生效。
+                  {config.provider === "glm" ? "请填写智谱GLM的 API Key" : config.provider === "qwen" ? "请填写千问Qwen的 API Key (DashScope)" : "请填写DeepSeek的 API Key"}。保存后需重启后端服务生效。
                 </p>
               </div>
 
@@ -402,10 +475,14 @@ export default function ModelSettings({ isOpen, onClose }: ModelSettingsProps) {
               <div className={`space-y-2 p-4 rounded-lg border ${
                 config.provider === "glm" 
                   ? "bg-purple-50 dark:bg-purple-900/20 border-purple-200 dark:border-purple-800" 
+                  : config.provider === "qwen"
+                  ? "bg-indigo-50 dark:bg-indigo-900/20 border-indigo-200 dark:border-indigo-800"
                   : "bg-orange-50 dark:bg-orange-900/20 border-orange-200 dark:border-orange-800"
               }`}>
                 <label className={`block text-sm font-medium mb-2 flex items-center gap-2 ${
-                  config.provider === "glm" ? "text-purple-800 dark:text-purple-300" : "text-orange-800 dark:text-orange-300"
+                  config.provider === "glm" ? "text-purple-800 dark:text-purple-300" 
+                  : config.provider === "qwen" ? "text-indigo-800 dark:text-indigo-300"
+                  : "text-orange-800 dark:text-orange-300"
                 }`}>
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
@@ -418,6 +495,8 @@ export default function ModelSettings({ isOpen, onClose }: ModelSettingsProps) {
                   className={`w-full px-3 py-2 border rounded-lg focus:ring-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm ${
                     config.provider === "glm"
                       ? "border-purple-300 dark:border-purple-600 focus:ring-purple-500"
+                      : config.provider === "qwen"
+                      ? "border-indigo-300 dark:border-indigo-600 focus:ring-indigo-500"
                       : "border-orange-300 dark:border-orange-600 focus:ring-orange-500"
                   }`}
                 >
@@ -428,7 +507,9 @@ export default function ModelSettings({ isOpen, onClose }: ModelSettingsProps) {
                   ))}
                 </select>
                 <p className={`mt-1 text-xs ${
-                  config.provider === "glm" ? "text-purple-600 dark:text-purple-400" : "text-orange-600 dark:text-orange-400"
+                  config.provider === "glm" ? "text-purple-600 dark:text-purple-400" 
+                  : config.provider === "qwen" ? "text-indigo-600 dark:text-indigo-400"
+                  : "text-orange-600 dark:text-orange-400"
                 }`}>
                   {filteredEmbeddingModels.find(m => m.id === config.embeddingModel)?.name || "选择文档向量化模型"}
                 </p>
@@ -488,6 +569,7 @@ export default function ModelSettings({ isOpen, onClose }: ModelSettingsProps) {
                     <ul className="mt-1 text-xs text-yellow-700 dark:text-yellow-400 space-y-1">
                       <li>• 智谱 GLM：国产模型，中文理解能力强，适合通用场景</li>
                       <li>• DeepSeek：高性能推理模型，适合复杂问题分析和代码生成</li>
+                      <li>• 千问 Qwen：阿里多模态模型，支持图片理解和文本生成，VL模型视觉能力突出</li>
                       <li>• 预处理模型建议使用快速版本以提高响应速度</li>
                       <li>• 修改 API Key 后需要重启后端服务才能生效</li>
                     </ul>

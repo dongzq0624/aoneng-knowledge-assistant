@@ -602,7 +602,7 @@ export default function KnowledgeModal({ isOpen, onClose }: Props) {
                       </p>
                     </div>
                     <p className="text-xs text-gray-400">
-                      支持 PDF, TXT, MD, DOCX（最大 50MB）
+                      支持 PDF, TXT, MD, DOCX, XLSX, CSV, PNG, JPG, WEBP（最大 50MB）
                     </p>
                   </div>
                 )}

@@ -1,61 +1,213 @@
 // LanceDB 向量存储服务
 import dotenv from "dotenv";
-dotenv.config(); // 确保环境变量已加载
+dotenv.config();
 
 import { connect } from "vectordb";
 import type { Connection, Table } from "vectordb";
 import type { DocumentChunk } from "../types.js";
+import fs from "fs/promises";
+import path from "path";
 
-const GLM_API_KEY =
-  process.env.GLM_API_KEY ||
-  "a2b3968e02a440c2971691fa545a05d4.TD0pU9hvf17syzly";
-const GLM_BASE_URL =
-  process.env.GLM_BASE_URL || "https://open.bigmodel.cn/api/paas/v4";
-const EMBEDDING_MODEL = process.env.GLM_EMBEDDING_MODEL || "embedding-3";
 const DB_PATH = "./lancedb";
 const TABLE_NAME = "documents";
+
+interface EmbeddingConfig {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  provider: "glm" | "deepseek" | "qwen";
+}
+
+interface StoredRecord {
+  text: string;
+  imageContent: string;
+  source: string;
+  filename: string;
+  chunkIndex: number;
+  type: "text" | "image" | "page";
+}
+
+interface VectorizedRecord extends StoredRecord {
+  vector: number[];
+}
+
+const INIT_FILENAME = "init";
+
+async function loadEmbeddingConfig(): Promise<EmbeddingConfig> {
+  const CONFIG_FILE = path.join(process.cwd(), "model-config.json");
+  
+  try {
+    const data = await fs.readFile(CONFIG_FILE, "utf-8");
+    const config = JSON.parse(data);
+    const provider = config.provider || "glm";
+    
+    if (provider === "qwen") {
+      return {
+        apiKey: config.qwenApiKey || process.env.QWEN_API_KEY || "",
+        baseUrl: config.qwenBaseUrl || "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        model: config.embeddingModel || "text-embedding-v4",
+        provider: "qwen",
+      };
+    }
+    
+    if (provider === "deepseek") {
+      return {
+        apiKey: config.deepseekApiKey || process.env.DEEPSEEK_API_KEY || "",
+        baseUrl: config.deepseekBaseUrl || "https://api.deepseek.com/v1",
+        model: config.embeddingModel || "deepseek-text-embedding-v1",
+        provider: "deepseek",
+      };
+    }
+    
+    return {
+      apiKey: config.glmApiKey || process.env.GLM_API_KEY || "",
+      baseUrl: config.glmBaseUrl || "https://open.bigmodel.cn/api/paas/v4",
+      model: config.embeddingModel || "embedding-3",
+      provider: "glm",
+    };
+  } catch {
+    const qwenApiKey = process.env.QWEN_API_KEY || "";
+    return {
+      apiKey: qwenApiKey,
+      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      model: "text-embedding-v4",
+      provider: "qwen",
+    };
+  }
+}
+
+function getEmbeddingUrl(config: EmbeddingConfig): string {
+  return `${config.baseUrl}/embeddings`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 5,
+  baseDelayMs: number = 1000
+): Promise<T> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      lastError = error;
+      const isRateLimit =
+        error?.message?.includes("429") ||
+        error?.message?.includes("Too Many Requests") ||
+        error?.message?.includes("Throttling");
+
+      if (isRateLimit && attempt < maxRetries) {
+        const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 500;
+        console.log(`⏳ 速率限制，等待 ${(delay / 1000).toFixed(1)}s 后重试 (${attempt + 1}/${maxRetries})...`);
+        await sleep(delay);
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError;
+}
+
+async function withConcurrencyLimit<T>(
+  items: T[],
+  fn: (item: T) => Promise<any>,
+  concurrency: number = 3,
+  delayBetweenStarts: number = 200
+): Promise<any[]> {
+  const results: any[] = new Array(items.length);
+  let running = 0;
+  let nextIndex = 0;
+  let done = false;
+
+  return new Promise<any[]>((resolve) => {
+    async function processItem(index: number): Promise<void> {
+      if (done) return;
+      running++;
+      try {
+        results[index] = await fn(items[index]);
+      } catch (error) {
+        console.error(`⚠️ 第 ${index + 1} 个块向量化失败: ${(error as Error)?.message || error}`);
+        results[index] = null;
+      } finally {
+        running--;
+        if (done) return;
+        const next = nextIndex++;
+        if (next < items.length) {
+          await sleep(delayBetweenStarts);
+          processItem(next);
+        }
+      }
+    }
+
+    const initialBatch = Math.min(concurrency, items.length);
+    for (let i = 0; i < initialBatch; i++) {
+      nextIndex++;
+      processItem(i);
+    }
+
+    let finished = 0;
+    const total = items.length;
+    const check = setInterval(() => {
+      const nonNull = results.filter((r) => r !== undefined).length;
+      if (nonNull !== finished) {
+        finished = nonNull;
+        console.log(`📊 Embedding 进度: ${finished}/${total}`);
+      }
+      if (finished >= total) {
+        clearInterval(check);
+        resolve(results);
+      }
+    }, 2000);
+  });
+}
 
 class VectorStoreService {
   private db: Connection | null = null;
   private table: Table | null = null;
+  private embeddingConfig: EmbeddingConfig | null = null;
+  private expectedVectorDimension: number | null = null;
+  private migrationPromise: Promise<void> | null = null;
 
   constructor() {
-    console.log("🔑 使用智谱嵌入模型:", EMBEDDING_MODEL);
+    console.log("🔑 向量存储服务初始化中...");
+  }
+
+  private async getEmbeddingConfig(): Promise<EmbeddingConfig> {
+    if (!this.embeddingConfig) {
+      this.embeddingConfig = await loadEmbeddingConfig();
+      console.log(`🔑 使用嵌入模型: ${this.embeddingConfig.model} (${this.embeddingConfig.provider})`);
+    }
+    return this.embeddingConfig;
   }
 
   /**
-   * 直接调用智谱 Embedding API
-   *
-   * ⚠️ 重要说明：不使用 LangChain 的 OpenAIEmbeddings
-   *
-   * 问题原因：
-   * LangChain 的 @langchain/openai 包中的 OpenAIEmbeddings 类与智谱 API 不完全兼容。
-   * 虽然智谱提供了 OpenAI 兼容的接口，但 LangChain 的实现会导致返回的 embedding 向量全为 0。
-   *
-   * 影响：
-   * - 所有文档的向量都是零向量
-   * - 导致相似度计算失效（所有文档相似度都是 1.000）
-   * - 检索功能完全失效，无法区分文档相关性
-   *
-   * 解决方案：
-   * 直接使用 fetch 调用智谱的 Embedding API，绕过 LangChain 的封装。
-   * 智谱 embedding-3 模型返回 2048 维的向量，可以正常工作。
-   *
-   * @param text 需要生成 embedding 的文本
-   * @returns 2048 维的 embedding 向量
+   * 调用嵌入 API 生成向量（纯文本嵌入，图片已在上游转为文字描述）
    */
-  private async getEmbedding(text: string): Promise<number[]> {
+  private async getEmbedding(chunk: DocumentChunk | string): Promise<number[]> {
     try {
-      const response = await fetch(`${GLM_BASE_URL}/embeddings`, {
+      const config = await this.getEmbeddingConfig();
+      if (!config.apiKey) {
+        throw new Error("未配置 Embedding API Key，请在 model-config.json 或环境变量中配置");
+      }
+      const embeddingUrl = getEmbeddingUrl(config);
+      const text = typeof chunk === "string" ? chunk : chunk.pageContent || "[空块]";
+
+      const requestBody: any = {
+        model: config.model,
+        input: text,
+      };
+
+      const response = await fetch(embeddingUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${GLM_API_KEY}`,
+          Authorization: `Bearer ${config.apiKey}`,
         },
-        body: JSON.stringify({
-          model: EMBEDDING_MODEL,
-          input: text,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
@@ -67,12 +219,218 @@ class VectorStoreService {
         throw new Error(`Embedding API 调用失败: ${response.statusText}`);
       }
 
-      const data = await response.json();
+      const data: any = await response.json();
       return data.data[0].embedding;
     } catch (error) {
       console.error("❌ Embedding 生成失败:", error);
       throw error;
     }
+  }
+
+  private async getExpectedVectorDimension(): Promise<number> {
+    if (this.expectedVectorDimension !== null) {
+      return this.expectedVectorDimension;
+    }
+
+    this.expectedVectorDimension = (await this.getEmbedding("向量维度检测")).length;
+    return this.expectedVectorDimension;
+  }
+
+  private async getExistingVectorDimension(): Promise<number | null> {
+    if (!this.table) {
+      return null;
+    }
+
+    const schema = await this.table.schema;
+    const vectorField = schema.fields.find((field) => field.name === "vector");
+    const vectorType: any = vectorField?.type;
+
+    if (!vectorType) {
+      return null;
+    }
+
+    if (typeof vectorType.listSize === "number") {
+      return vectorType.listSize;
+    }
+
+    const match = String(vectorType).match(/FixedSizeList\[(\d+)\]/);
+    return match ? Number(match[1]) : null;
+  }
+
+  private async getTableFieldNames(): Promise<Set<string>> {
+    if (!this.table) {
+      return new Set();
+    }
+
+    const schema = await this.table.schema;
+    return new Set(schema.fields.map((field) => field.name));
+  }
+
+  private normalizeStoredRecord(row: Record<string, unknown>): StoredRecord {
+    const type = row.type;
+    return {
+      text: String(row.text ?? ""),
+      imageContent: String(row.imageContent ?? ""),
+      source: String(row.source ?? ""),
+      filename: String(row.filename ?? ""),
+      chunkIndex: Number(row.chunkIndex ?? 0),
+      type: type === "image" || type === "page" ? type : "text",
+    };
+  }
+
+  private async scanTableRows(): Promise<StoredRecord[]> {
+    await this.initialize();
+    if (!this.table) {
+      return [];
+    }
+
+    const total = await this.table.countRows("filename IS NOT NULL");
+    if (total === 0) {
+      return [];
+    }
+
+    const fieldNames = await this.getTableFieldNames();
+    const selectableFields = ["text", "imageContent", "source", "filename", "chunkIndex", "type"].filter(
+      (field) => fieldNames.has(field)
+    );
+
+    const rows = await this.table
+      .filter("filename IS NOT NULL")
+      .select(selectableFields)
+      .limit(total)
+      .execute<Record<string, unknown>>();
+
+    return rows
+      .map((row) => this.normalizeStoredRecord(row))
+      .filter((row) => row.filename && row.filename !== INIT_FILENAME);
+  }
+
+  private async vectorizeChunks(chunks: DocumentChunk[]): Promise<VectorizedRecord[]> {
+    const config = await this.getEmbeddingConfig();
+    const concurrency = config.provider === "qwen" ? 2 : 5;
+    const delayMs = config.provider === "qwen" ? 500 : 200;
+
+    console.log(`📊 开始向量化 ${chunks.length} 个文档块 (并发: ${concurrency}, Qwen限速保护)`);
+
+    const results = await withConcurrencyLimit(
+      chunks,
+      async (chunk: DocumentChunk) =>
+        withRetry(async () => {
+          const vector = await this.getEmbedding(chunk);
+          return {
+            vector,
+            text: chunk.pageContent || "[图片块]",
+            imageContent: chunk.imageContent || "",
+            source: chunk.metadata.source,
+            filename: chunk.metadata.filename,
+            chunkIndex: chunk.metadata.chunkIndex,
+            type: chunk.metadata.type || "text",
+          } as VectorizedRecord;
+        }),
+      concurrency,
+      delayMs
+    );
+
+    const records = results.filter((record): record is VectorizedRecord => record !== null && record !== undefined);
+
+    if (records.length === 0) {
+      throw new Error("所有文档块向量化均失败");
+    }
+
+    const skipped = results.length - records.length;
+    if (skipped > 0) {
+      console.log(`⚠️ ${skipped}/${results.length} 个块失败已跳过，成功 ${records.length} 个`);
+    }
+
+    return records;
+  }
+
+  private recordToChunk(record: StoredRecord): DocumentChunk {
+    return {
+      pageContent: record.text,
+      imageContent: record.imageContent || undefined,
+      metadata: {
+        source: record.source,
+        filename: record.filename,
+        chunkIndex: record.chunkIndex,
+        type: record.type,
+      },
+    };
+  }
+
+  private async rebuildTable(records: VectorizedRecord[]): Promise<void> {
+    this.table = null;
+    this.db = null;
+
+    try {
+      await fs.rm(DB_PATH, { recursive: true, force: true });
+      console.log("✅ 已删除旧数据库");
+    } catch (error) {
+      console.log(`⚠️ 删除旧数据库目录时出现问题，继续重建: ${error}`);
+    }
+
+    this.db = await connect(DB_PATH);
+
+    if (records.length > 0) {
+      this.table = await this.db.createTable(TABLE_NAME, this.toTableRecords(records));
+      console.log(`✅ 已重建向量表，共恢复 ${records.length} 条记录`);
+    } else {
+      this.table = null;
+      console.log("✅ 已重建为空数据库，等待新文档写入");
+    }
+  }
+
+  private toTableRecords(records: VectorizedRecord[]): Array<Record<string, unknown>> {
+    return records.map((record) => ({
+      vector: record.vector,
+      text: record.text,
+      imageContent: record.imageContent,
+      source: record.source,
+      filename: record.filename,
+      chunkIndex: record.chunkIndex,
+      type: record.type,
+    }));
+  }
+
+  private async ensureTableCompatibility(incomingRecords: VectorizedRecord[]): Promise<void> {
+    if (!this.table || incomingRecords.length === 0) {
+      return;
+    }
+
+    const existingDimension = await this.getExistingVectorDimension();
+    const incomingDimension = incomingRecords[0].vector.length;
+
+    if (existingDimension === null || existingDimension === incomingDimension) {
+      return;
+    }
+
+    if (!this.migrationPromise) {
+      this.migrationPromise = (async () => {
+        console.warn(
+          `⚠️ 检测到向量维度变化: 旧表 ${existingDimension} 维，新模型 ${incomingDimension} 维。开始自动迁移旧数据...`
+        );
+
+        const oldRows = await this.scanTableRows();
+        if (oldRows.length === 0) {
+          await this.rebuildTable([]);
+          return;
+        }
+
+        const oldChunks = oldRows.map((row) => this.recordToChunk(row));
+        const migratedRecords = await this.vectorizeChunks(oldChunks);
+        await this.rebuildTable(migratedRecords);
+      })();
+    }
+
+    try {
+      await this.migrationPromise;
+    } finally {
+      this.migrationPromise = null;
+    }
+  }
+
+  private escapeSqlString(value: string): string {
+    return value.replace(/'/g, "''");
   }
 
   // 初始化数据库连接
@@ -104,22 +462,14 @@ class VectorStoreService {
     await this.initialize();
 
     try {
-      const records = await Promise.all(
-        chunks.map(async (chunk) => ({
-          vector: await this.getEmbedding(chunk.pageContent),
-          text: chunk.pageContent,
-          source: chunk.metadata.source,
-          filename: chunk.metadata.filename,
-          chunkIndex: chunk.metadata.chunkIndex,
-        }))
-      );
+      const records = await this.vectorizeChunks(chunks);
+      await this.ensureTableCompatibility(records);
 
-      // 如果表不存在，创建新表
       if (!this.table) {
-        this.table = await this.db!.createTable(TABLE_NAME, records);
+        this.table = await this.db!.createTable(TABLE_NAME, this.toTableRecords(records));
         console.log("✅ 创建新表:", TABLE_NAME);
       } else {
-        await this.table.add(records);
+        await this.table.add(this.toTableRecords(records));
       }
 
       console.log(`✅ 添加 ${records.length} 个文档块到向量库`);
@@ -144,6 +494,12 @@ class VectorStoreService {
 
     try {
       const queryVector = await this.getEmbedding(query);
+      const existingDimension = await this.getExistingVectorDimension();
+      if (existingDimension !== null && queryVector.length !== existingDimension) {
+        throw new Error(
+          `当前知识库使用 ${existingDimension} 维向量，但当前嵌入模型返回 ${queryVector.length} 维。请重新上传文档或清空知识库后重建索引。`
+        );
+      }
       const results = await this.table
         .search(queryVector)
         .limit(topK * 2) // 多检索一些，然后过滤
@@ -154,10 +510,12 @@ class VectorStoreService {
         .filter((r: any) => r.filename !== "init") // 过滤初始化数据
         .map((result: any) => ({
           pageContent: result.text,
+          imageContent: result.imageContent || undefined,
           metadata: {
             source: result.source,
             filename: result.filename,
             chunkIndex: result.chunkIndex,
+            type: result.type || "text",
           },
           score: result._distance, // 距离越小越相似
         }))
@@ -194,28 +552,9 @@ class VectorStoreService {
 
   // 获取所有文档块（用于关键词检索）
   async getAllDocumentChunks(): Promise<DocumentChunk[]> {
-    await this.initialize();
-    if (!this.table) {
-      return [];
-    }
-
     try {
-      const queryVector = await this.getEmbedding("获取所有文档");
-      const results = await this.table
-        .search(queryVector)
-        .limit(10000)
-        .execute();
-
-      return results
-        .filter((r: any) => r.filename && r.filename !== "init")
-        .map((r: any) => ({
-          pageContent: r.text,
-          metadata: {
-            source: r.source,
-            filename: r.filename,
-            chunkIndex: r.chunkIndex,
-          },
-        }));
+      const rows = await this.scanTableRows();
+      return rows.map((row) => this.recordToChunk(row));
     } catch (error) {
       console.error("❌ 获取所有文档块失败:", error);
       return [];
@@ -231,26 +570,15 @@ class VectorStoreService {
       vectorDimension: number;
     }>
   > {
-    await this.initialize();
-    if (!this.table) {
-      return [];
-    }
-
     try {
-      const queryVector = await this.getEmbedding("获取所有文档");
-      const results = await this.table
-        .search(queryVector)
-        .limit(10000)
-        .execute();
-
-      return results
-        .filter((r: any) => r.filename && r.filename !== "init")
-        .map((r: any) => ({
-          filename: r.filename,
-          chunkIndex: r.chunkIndex,
-          text: r.text,
-          vectorDimension: r.vector ? r.vector.length : 0,
-        }));
+      const rows = await this.scanTableRows();
+      const vectorDimension = (await this.getExistingVectorDimension()) || (await this.getExpectedVectorDimension());
+      return rows.map((row) => ({
+        filename: row.filename,
+        chunkIndex: row.chunkIndex,
+        text: row.text,
+        vectorDimension,
+      }));
     } catch (error) {
       console.error("❌ 获取向量数据失败:", error);
       return [];
@@ -261,28 +589,15 @@ class VectorStoreService {
   async getAllDocuments(): Promise<
     Array<{ filename: string; chunks: number; uploadTime?: string }>
   > {
-    await this.initialize();
-    if (!this.table) {
-      return [];
-    }
-
     try {
-      // 使用一个有效的查询向量获取所有记录
-      const queryVector = await this.getEmbedding("获取所有文档");
-      const results = await this.table
-        .search(queryVector)
-        .limit(10000)
-        .execute();
-
-      // 按文件名分组统计
+      const rows = await this.scanTableRows();
       const fileMap = new Map<string, number>();
-      results.forEach((r: any) => {
-        if (r.filename && r.filename !== "init") {
-          fileMap.set(r.filename, (fileMap.get(r.filename) || 0) + 1);
+      rows.forEach((row) => {
+        if (row.filename) {
+          fileMap.set(row.filename, (fileMap.get(row.filename) || 0) + 1);
         }
       });
 
-      // 转换为数组
       return Array.from(fileMap.entries()).map(([filename, chunks]) => ({
         filename,
         chunks,
@@ -296,52 +611,16 @@ class VectorStoreService {
   // 删除所有文档（重置数据库）
   async deleteAllDocuments(): Promise<number> {
     await this.initialize();
-    if (!this.table) {
+    if (!this.table && !this.db) {
       console.log("⚠️ 向量库为空，无需删除");
       return 0;
     }
 
     try {
       console.log("🔍 开始删除所有文档");
-
-      // 获取所有记录
-      const queryVector = await this.getEmbedding("获取所有文档");
-      const allResults = await this.table
-        .search(queryVector)
-        .limit(10000)
-        .execute();
-
-      const totalCount = allResults.length;
+      const totalCount = this.table ? await this.table.countRows("filename IS NOT NULL") : 0;
       console.log(`📊 将删除所有 ${totalCount} 条记录`);
-
-      // 关闭当前连接
-      this.table = null;
-      this.db = null;
-
-      // 删除整个数据库目录
-      const fs = await import("fs/promises");
-      try {
-        await fs.rm(DB_PATH, { recursive: true, force: true });
-        console.log("✅ 已删除旧数据库");
-      } catch (e) {
-        console.log("⚠️ 删除数据库目录失败，继续...");
-      }
-
-      // 重新初始化数据库
-      this.db = await connect(DB_PATH);
-
-      // 创建一个初始化记录
-      const initData = [
-        {
-          vector: await this.getEmbedding("初始化"),
-          text: "初始化文档",
-          source: "system",
-          filename: "init",
-          chunkIndex: 0,
-        },
-      ];
-      this.table = await this.db.createTable(TABLE_NAME, initData);
-      console.log("✅ 已重置数据库");
+      await this.rebuildTable([]);
 
       return totalCount;
     } catch (error) {
@@ -364,66 +643,12 @@ class VectorStoreService {
 
     try {
       console.log(`🔍 开始删除文档: ${filename}`);
-
-      // 获取所有记录
-      const queryVector = await this.getEmbedding("获取所有文档");
-      const allResults = await this.table
-        .search(queryVector)
-        .limit(10000)
-        .execute();
-
-      console.log(`📊 当前总记录数: ${allResults.length}`);
-
-      // 过滤掉要删除的文档，只保留需要的字段
-      const remainingRecords = allResults
-        .filter((r: any) => r.filename !== filename)
-        .map((r: any) => ({
-          vector: r.vector,
-          text: r.text,
-          source: r.source,
-          filename: r.filename,
-          chunkIndex: r.chunkIndex,
-        }));
-
-      const deletedCount = allResults.length - remainingRecords.length;
+      const escapedFilename = this.escapeSqlString(filename);
+      const deletedCount = await this.table.countRows(`filename = '${escapedFilename}'`);
       console.log(`🗑️ 将删除 ${deletedCount} 条记录`);
 
       if (deletedCount > 0) {
-        // 关闭当前连接
-        this.table = null;
-        this.db = null;
-
-        // 删除整个数据库目录
-        const fs = await import("fs/promises");
-        try {
-          await fs.rm(DB_PATH, { recursive: true, force: true });
-          console.log("✅ 已删除旧数据库");
-        } catch (e) {
-          console.log("⚠️ 删除数据库目录失败，继续...");
-        }
-
-        // 重新初始化数据库
-        this.db = await connect(DB_PATH);
-
-        // 重新创建表
-        if (remainingRecords.length > 0) {
-          this.table = await this.db.createTable(TABLE_NAME, remainingRecords);
-          console.log(`✅ 重建表，保留 ${remainingRecords.length} 条记录`);
-        } else {
-          // 如果没有剩余记录，创建一个初始化记录
-          const initData = [
-            {
-              vector: await this.getEmbedding("初始化"),
-              text: "初始化文档",
-              source: "system",
-              filename: "init",
-              chunkIndex: 0,
-            },
-          ];
-          this.table = await this.db.createTable(TABLE_NAME, initData);
-          console.log("✅ 创建新的初始化表");
-        }
-
+        await this.table.delete(`filename = '${escapedFilename}'`);
         console.log(`✅ 已删除文档 ${filename}，共 ${deletedCount} 个块`);
       } else {
         console.log(`⚠️ 未找到文档 ${filename}`);

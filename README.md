@@ -122,6 +122,15 @@ graph LR
   - `glm-4.6` - 高质量回答
 - Embedding-3 - 向量化模型
 
+**多模态 RAG 处理**
+
+- PDF：逐页渲染为高清 PNG 页面图，再调用视觉模型生成纯文本页面解读
+- DOCX：优先使用 LibreOffice Headless 转 PDF 后逐页渲染；未安装 LibreOffice 时自动降级为高清文本页图 + 内嵌图片理解
+- 视觉模型：推荐 `qwen-vl-plus`，输出页面摘要、正文要点、图表/表格/截图解读和关键数据
+- 入库方式：只对视觉解读后的纯文本切片、向量化、写入 LanceDB，同时保留页面图用于命中后的图文引用
+
+> DOCX 真正保留 Word 版式分页需要服务器安装 LibreOffice，并确保 `soffice` 在 PATH 中，或安装在 `C:\Program Files\LibreOffice\program\soffice.exe`。
+
 > 🎉 **100% JavaScript/TypeScript**：从前端到后端，从数据处理到 AI 调用，全部使用你熟悉的技术栈！
 
 ---

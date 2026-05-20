@@ -32,6 +32,24 @@ interface VectorizedRecord extends StoredRecord {
 }
 
 const INIT_FILENAME = "init";
+const QWEN_DEFAULT_EMBEDDING_MODEL = "text-embedding-v4";
+
+function normalizeEmbeddingModel(
+  provider: EmbeddingConfig["provider"],
+  model?: string
+): string {
+  if (provider === "qwen") {
+    return model === QWEN_DEFAULT_EMBEDDING_MODEL
+      ? model
+      : QWEN_DEFAULT_EMBEDDING_MODEL;
+  }
+
+  if (provider === "deepseek") {
+    return model || "deepseek-text-embedding-v1";
+  }
+
+  return model || "embedding-3";
+}
 
 async function loadEmbeddingConfig(): Promise<EmbeddingConfig> {
   const CONFIG_FILE = path.join(process.cwd(), "model-config.json");
@@ -42,10 +60,22 @@ async function loadEmbeddingConfig(): Promise<EmbeddingConfig> {
     const provider = config.provider || "glm";
     
     if (provider === "qwen") {
+      const normalizedModel = normalizeEmbeddingModel(
+        "qwen",
+        config.embeddingModel
+      );
+      if (normalizedModel !== config.embeddingModel && config.embeddingModel) {
+        console.warn(
+          `[vectorstore] Qwen embedding model "${config.embeddingModel}" is not supported in compatibility mode, fallback to "${normalizedModel}".`
+        );
+      }
+
       return {
         apiKey: config.qwenApiKey || process.env.QWEN_API_KEY || "",
-        baseUrl: config.qwenBaseUrl || "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        model: config.embeddingModel || "text-embedding-v4",
+        baseUrl:
+          config.qwenBaseUrl ||
+          "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        model: normalizedModel,
         provider: "qwen",
       };
     }
@@ -54,7 +84,7 @@ async function loadEmbeddingConfig(): Promise<EmbeddingConfig> {
       return {
         apiKey: config.deepseekApiKey || process.env.DEEPSEEK_API_KEY || "",
         baseUrl: config.deepseekBaseUrl || "https://api.deepseek.com/v1",
-        model: config.embeddingModel || "deepseek-text-embedding-v1",
+        model: normalizeEmbeddingModel("deepseek", config.embeddingModel),
         provider: "deepseek",
       };
     }
@@ -62,7 +92,7 @@ async function loadEmbeddingConfig(): Promise<EmbeddingConfig> {
     return {
       apiKey: config.glmApiKey || process.env.GLM_API_KEY || "",
       baseUrl: config.glmBaseUrl || "https://open.bigmodel.cn/api/paas/v4",
-      model: config.embeddingModel || "embedding-3",
+      model: normalizeEmbeddingModel("glm", config.embeddingModel),
       provider: "glm",
     };
   } catch {
@@ -70,7 +100,7 @@ async function loadEmbeddingConfig(): Promise<EmbeddingConfig> {
     return {
       apiKey: qwenApiKey,
       baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      model: "text-embedding-v4",
+      model: QWEN_DEFAULT_EMBEDDING_MODEL,
       provider: "qwen",
     };
   }

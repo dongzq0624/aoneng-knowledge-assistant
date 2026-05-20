@@ -4,6 +4,8 @@ dotenv.config();
 const API_KEY = process.env.QWEN_API_KEY || "sk-fea8e3a74afc487096ad0b72fffb976f";
 
 async function main() {
+  // This script targets DashScope's native multimodal embedding endpoint.
+  // It is different from the OpenAI-compatible /embeddings API used in the app.
   const url = "https://dashscope.aliyuncs.com/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding";
   
   const textResponse = await fetch(url, {

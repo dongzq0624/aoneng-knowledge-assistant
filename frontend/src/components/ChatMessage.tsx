@@ -145,21 +145,59 @@ function ImageViewer({ src, alt, onClose }: { src: string; alt: string; onClose:
 }
 
 // 图片组件
-function ImageComponent({ src, alt, isDarkMode }: { src: string; alt: string; isDarkMode: boolean }) {
+function ImageComponent({
+  src,
+  alt,
+  isDarkMode,
+  compact = false,
+}: {
+  src: string;
+  alt: string;
+  isDarkMode: boolean;
+  compact?: boolean;
+}) {
   const [showViewer, setShowViewer] = useState(false);
 
   return (
     <>
-      <div className="my-3">
-        <img
-          src={src}
-          alt={alt}
-          className={`rounded-lg shadow-md cursor-pointer hover:opacity-90 transition-opacity max-w-full max-h-[400px] object-contain ${isDarkMode ? 'border border-gray-700' : 'border border-gray-200'}`}
-          onClick={() => setShowViewer(true)}
-          loading="lazy"
-        />
+      <div className={compact ? "my-0" : "my-3"}>
+        <div
+          className={`overflow-hidden rounded-lg shadow-md ${
+            compact
+              ? `inline-flex h-[96px] w-[132px] items-center justify-center sm:h-[112px] sm:w-[160px] ${
+                  isDarkMode
+                    ? "border border-gray-700 bg-gray-800"
+                    : "border border-gray-200 bg-gray-50"
+                }`
+              : ""
+          }`}
+        >
+          <img
+            src={src}
+            alt={alt}
+            className={`cursor-pointer object-contain transition-opacity hover:opacity-90 ${
+              compact
+                ? "h-full w-full p-1.5"
+                : `max-w-full max-h-[400px] rounded-lg ${
+                    isDarkMode ? "border border-gray-700" : "border border-gray-200"
+                  }`
+            }`}
+            onClick={() => setShowViewer(true)}
+            loading="lazy"
+          />
+        </div>
         {alt && (
-          <p className={`text-xs mt-1 text-center ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+          <p
+            className={`mt-1 text-center text-xs ${
+              compact
+                ? isDarkMode
+                  ? "max-w-[132px] text-gray-500 sm:max-w-[160px]"
+                  : "max-w-[132px] text-gray-400 sm:max-w-[160px]"
+                : isDarkMode
+                ? "text-gray-400"
+                : "text-gray-500"
+            }`}
+          >
             {alt}
           </p>
         )}
@@ -314,7 +352,10 @@ export default function ChatMessage({ message, isDarkMode = false, onDelete, isS
                       <li className={`${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`} {...props} />
                     ),
                     p: ({ node, ...props }) => (
-                      <p className={`mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`} {...props} />
+                      <div
+                        className={`mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}
+                        {...props}
+                      />
                     ),
                     strong: ({ node, ...props }) => (
                       <strong
@@ -356,13 +397,14 @@ export default function ChatMessage({ message, isDarkMode = false, onDelete, isS
                 </ReactMarkdown>
                 {/* 渲染随文本一起返回的内联图片 */}
                 {images.length > 0 && (
-                  <div className="mt-4 flex flex-wrap gap-2">
+                  <div className="mt-4 flex flex-wrap items-start gap-3">
                     {images.map((src, idx) => (
-                      <div key={idx} className="w-full max-w-[300px]">
+                      <div key={idx} className="flex-none">
                         <ImageComponent
                           src={src}
                           alt={`检索到的图片 ${idx + 1}`}
                           isDarkMode={isDarkMode}
+                          compact
                         />
                       </div>
                     ))}

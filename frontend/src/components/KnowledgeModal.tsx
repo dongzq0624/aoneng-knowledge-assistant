@@ -197,7 +197,7 @@ export default function KnowledgeModal({ isOpen, onClose }: Props) {
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full mx-2 sm:mx-4 overflow-hidden max-h-[85vh] sm:max-h-[80vh] flex flex-col">
         {/* 头部 */}
-        <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-gray-200 flex justify-between items-center">
+        <div className="shrink-0 px-4 sm:px-6 py-3 sm:py-4 border-b border-gray-200 flex justify-between items-center bg-white">
           <h2 className="text-lg sm:text-xl font-semibold text-gray-900">知识库管理</h2>
           <button
             onClick={onClose}
@@ -220,8 +220,8 @@ export default function KnowledgeModal({ isOpen, onClose }: Props) {
         </div>
 
         {/* 标签页 */}
-        <div className="flex border-b border-gray-200 px-4 sm:px-6 justify-between items-center overflow-x-auto">
-          <div className="flex flex-1 min-w-0">
+        <div className="shrink-0 flex border-b border-gray-200 px-4 sm:px-6 justify-between items-center overflow-x-auto bg-white">
+          <div className="flex flex-1 min-w-0 whitespace-nowrap">
             <button
               onClick={() => setActiveTab("list")}
               className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium border-b-2 transition-colors flex-shrink-0 ${
@@ -266,7 +266,7 @@ export default function KnowledgeModal({ isOpen, onClose }: Props) {
         </div>
 
         {/* 内容区域 */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6">
           {activeTab === "list" ? (
             <div className="space-y-3">
               {loading ? (
@@ -383,7 +383,7 @@ export default function KnowledgeModal({ isOpen, onClose }: Props) {
               )}
             </div>
           ) : activeTab === "vectors" ? (
-            <div className="flex flex-col h-full">
+            <div className="flex flex-col h-full min-h-0">
               {vectorsLoading ? (
                 <div className="text-center py-8 text-gray-500">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto mb-2"></div>
@@ -467,7 +467,7 @@ export default function KnowledgeModal({ isOpen, onClose }: Props) {
                   </div>
 
                   {/* 向量列表 */}
-                  <div className="flex-1 overflow-y-auto space-y-3">
+                  <div className="flex-1 min-h-0 overflow-y-auto space-y-3">
                     {filteredVectors.length === 0 ? (
                       <div className="text-center py-8 text-gray-500">
                         <p>没有找到匹配的向量记录</p>

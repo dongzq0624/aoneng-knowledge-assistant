@@ -16,6 +16,89 @@ interface Conversation {
   updatedAt: number;
 }
 
+const CONVERSATIONS_STORAGE_KEY = "allConversations";
+const THEME_STORAGE_KEY = "theme";
+const IMAGE_DATA_PATTERN = /\[IMAGES_DATA\][\s\S]*?\[\/IMAGES_DATA\]/g;
+
+function stripHeavyMessageContent(content: string): string {
+  return content.replace(IMAGE_DATA_PATTERN, "").trim();
+}
+
+function sanitizeMessageForStorage(
+  message: Message,
+  maxContentLength: number
+): Message {
+  const normalizedContent = stripHeavyMessageContent(message.content || "");
+  const truncatedContent =
+    normalizedContent.length > maxContentLength
+      ? `${normalizedContent.slice(0, maxContentLength)}\n\n[内容已为本地存储截断]`
+      : normalizedContent;
+
+  return {
+    role: message.role,
+    content: truncatedContent,
+    sources: message.sources?.slice(0, 12).map((source) => ({
+      filename: source.filename,
+    })),
+  };
+}
+
+function buildPersistedConversations(
+  conversations: Conversation[],
+  maxConversations: number,
+  maxMessagesPerConversation: number,
+  maxContentLength: number
+): Conversation[] {
+  return conversations.slice(0, maxConversations).map((conversation) => ({
+    ...conversation,
+    messages: conversation.messages
+      .slice(-maxMessagesPerConversation)
+      .map((message) => sanitizeMessageForStorage(message, maxContentLength)),
+  }));
+}
+
+function persistConversations(
+  conversations: Conversation[]
+): { persisted: boolean; degraded: boolean } {
+  if (conversations.length === 0) {
+    localStorage.removeItem(CONVERSATIONS_STORAGE_KEY);
+    return { persisted: true, degraded: false };
+  }
+
+  const strategies = [
+    { maxConversations: 20, maxMessagesPerConversation: 40, maxContentLength: 12000 },
+    { maxConversations: 12, maxMessagesPerConversation: 24, maxContentLength: 8000 },
+    { maxConversations: 8, maxMessagesPerConversation: 16, maxContentLength: 4000 },
+    { maxConversations: 4, maxMessagesPerConversation: 12, maxContentLength: 2500 },
+    { maxConversations: 1, maxMessagesPerConversation: 10, maxContentLength: 1500 },
+  ];
+
+  for (let i = 0; i < strategies.length; i++) {
+    const strategy = strategies[i];
+    const payload = buildPersistedConversations(
+      conversations,
+      strategy.maxConversations,
+      strategy.maxMessagesPerConversation,
+      strategy.maxContentLength
+    );
+
+    try {
+      localStorage.setItem(
+        CONVERSATIONS_STORAGE_KEY,
+        JSON.stringify(payload)
+      );
+      return { persisted: true, degraded: i > 0 };
+    } catch (error) {
+      if (!(error instanceof DOMException) || error.name !== "QuotaExceededError") {
+        throw error;
+      }
+    }
+  }
+
+  console.warn("localStorage quota exceeded, skip persisting conversations.");
+  return { persisted: false, degraded: true };
+}
+
 function App() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
@@ -26,6 +109,7 @@ function App() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [showSidebar, setShowSidebar] = useState(true);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const [storageNotice, setStorageNotice] = useState<string | null>(null);
 
   // 获取当前对话
   const currentConversation = conversations.find(c => c.id === currentConversationId);
@@ -33,7 +117,7 @@ function App() {
 
   // 从 localStorage 加载所有对话和主题
   useEffect(() => {
-    const saved = localStorage.getItem("allConversations");
+    const saved = localStorage.getItem(CONVERSATIONS_STORAGE_KEY);
     if (saved) {
       try {
         const loaded = JSON.parse(saved);
@@ -47,7 +131,7 @@ function App() {
     }
     
     // 加载主题设置
-    const savedTheme = localStorage.getItem("theme");
+    const savedTheme = localStorage.getItem(THEME_STORAGE_KEY);
     if (savedTheme === "dark") {
       setIsDarkMode(true);
       document.documentElement.classList.add("dark");
@@ -56,8 +140,18 @@ function App() {
 
   // 保存所有对话到 localStorage
   useEffect(() => {
-    if (conversations.length > 0) {
-      localStorage.setItem("allConversations", JSON.stringify(conversations));
+    try {
+      const result = persistConversations(conversations);
+      if (result.persisted && result.degraded) {
+        setStorageNotice("本地历史已自动精简，避免超出浏览器存储上限。");
+      } else if (result.persisted) {
+        setStorageNotice(null);
+      } else {
+        setStorageNotice("本地历史存储空间不足，新的完整会话仅保留在当前页面。");
+      }
+    } catch (error) {
+      console.error("保存历史失败", error);
+      setStorageNotice("本地历史保存失败，但当前会话仍可继续使用。");
     }
   }, [conversations]);
 
@@ -258,10 +352,18 @@ function App() {
     setIsDarkMode(newDarkMode);
     if (newDarkMode) {
       document.documentElement.classList.add("dark");
-      localStorage.setItem("theme", "dark");
+      try {
+        localStorage.setItem(THEME_STORAGE_KEY, "dark");
+      } catch (error) {
+        console.warn("保存主题设置失败", error);
+      }
     } else {
       document.documentElement.classList.remove("dark");
-      localStorage.setItem("theme", "light");
+      try {
+        localStorage.setItem(THEME_STORAGE_KEY, "light");
+      } catch (error) {
+        console.warn("保存主题设置失败", error);
+      }
     }
   };
 
@@ -518,6 +620,17 @@ function App() {
         {/* 聊天区域 */}
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-5xl mx-auto px-3 sm:px-4 py-3 sm:py-4">
+            {storageNotice && (
+              <div
+                className={`mb-3 rounded-xl border px-3 py-2 text-xs sm:text-sm ${
+                  isDarkMode
+                    ? "border-amber-800 bg-amber-950/40 text-amber-200"
+                    : "border-amber-200 bg-amber-50 text-amber-700"
+                }`}
+              >
+                {storageNotice}
+              </div>
+            )}
             {currentMessages.length === 0 ? (
               <div className="text-center py-16 sm:py-20">
                 <div className="w-14 sm:w-16 h-14 sm:h-16 bg-gradient-to-br from-blue-600 to-blue-700 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">

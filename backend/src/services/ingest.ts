@@ -60,6 +60,19 @@ async function loadVisionConfig(): Promise<VisionConfig> {
   const config = await loadJsonConfig();
   const provider = config.provider || "qwen";
 
+  if (provider === "deepseek") {
+    return {
+      apiKey: config.deepseekApiKey || process.env.DEEPSEEK_API_KEY || "",
+      baseURL:
+        config.deepseekBaseUrl ||
+        process.env.DEEPSEEK_BASE_URL ||
+        "https://api.deepseek.com/v1",
+      model:
+        config.visionModel || config.generationModel || "DeepSeek-V4-Flash",
+      maxTokens: config.visionMaxTokens || 1800,
+    };
+  }
+
   if (provider === "qwen") {
     return {
       apiKey: config.qwenApiKey || process.env.QWEN_API_KEY || "",
@@ -67,7 +80,7 @@ async function loadVisionConfig(): Promise<VisionConfig> {
         config.qwenBaseUrl ||
         process.env.QWEN_BASE_URL ||
         "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      model: config.visionModel || config.generationModel || "qwen-vl-plus",
+      model: config.visionModel || config.generationModel || "Qwen3.6-Plus",
       maxTokens: config.visionMaxTokens || 1800,
     };
   }
@@ -79,7 +92,7 @@ async function loadVisionConfig(): Promise<VisionConfig> {
         config.glmBaseUrl ||
         process.env.GLM_BASE_URL ||
         "https://open.bigmodel.cn/api/paas/v4",
-      model: config.visionModel || "glm-4v-flash",
+      model: config.visionModel || "GLM-5V-Turbo",
       maxTokens: config.visionMaxTokens || 1800,
     };
   }

@@ -1,4 +1,3 @@
-// API 封装
 const API_BASE = "/api";
 
 export interface SourceReference {
@@ -11,7 +10,43 @@ export interface ChatMessage {
   sources?: SourceReference[];
 }
 
-// 上传文件
+const IMAGE_DATA_PATTERN = /\[IMAGES_DATA\][\s\S]*?\[\/IMAGES_DATA\]/g;
+const MAX_HISTORY_MESSAGES = 12;
+const MAX_HISTORY_CHARS = 24000;
+
+function sanitizeMessageContent(content: string): string {
+  return content.replace(IMAGE_DATA_PATTERN, "").trim();
+}
+
+function prepareHistoryForRequest(history: ChatMessage[]): ChatMessage[] {
+  const selected: ChatMessage[] = [];
+  let totalChars = 0;
+
+  for (let i = history.length - 1; i >= 0; i--) {
+    const msg = history[i];
+    const content = sanitizeMessageContent(msg.content || "");
+
+    if (!content) {
+      continue;
+    }
+
+    if (
+      selected.length >= MAX_HISTORY_MESSAGES ||
+      totalChars + content.length > MAX_HISTORY_CHARS
+    ) {
+      break;
+    }
+
+    selected.push({
+      role: msg.role,
+      content,
+    });
+    totalChars += content.length;
+  }
+
+  return selected.reverse();
+}
+
 export async function uploadFile(file: File): Promise<{
   success: boolean;
   message: string;
@@ -34,7 +69,6 @@ export async function uploadFile(file: File): Promise<{
   return response.json();
 }
 
-// 发送聊天消息（流式）
 export async function* sendMessage(
   message: string,
   history: ChatMessage[],
@@ -45,26 +79,30 @@ export async function* sendMessage(
   sources?: SourceReference[];
   error?: string;
 }> {
-  console.log("📤 发送消息:", message);
-  console.log("📜 历史记录:", history);
+  const requestHistory = prepareHistoryForRequest(history);
+
+  console.log("发送消息:", message);
+  console.log("历史记录:", requestHistory);
 
   const response = await fetch(`${API_BASE}/chat`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ message, history }),
+    body: JSON.stringify({ message, history: requestHistory }),
     signal,
   });
 
-  console.log("📡 响应状态:", response.status);
+  console.log("响应状态:", response.status);
 
   if (!response.ok) {
     throw new Error(`请求失败: ${response.status}`);
   }
 
   const reader = response.body?.getReader();
-  if (!reader) throw new Error("无法读取响应");
+  if (!reader) {
+    throw new Error("无法读取响应");
+  }
 
   const decoder = new TextDecoder();
   let buffer = "";
@@ -73,27 +111,29 @@ export async function* sendMessage(
   while (true) {
     const { done, value } = await reader.read();
     if (done) {
-      console.log("✅ 读取完成，共收到", chunkCount, "个数据块");
+      console.log("读取完成，共收到", chunkCount, "个数据块");
       break;
     }
 
     const rawChunk = decoder.decode(value, { stream: true });
-    console.log("📦 原始数据块:", rawChunk);
+    console.log("原始数据块:", rawChunk);
 
     buffer += rawChunk;
     const lines = buffer.split("\n\n");
     buffer = lines.pop() || "";
 
     for (const line of lines) {
-      if (line.startsWith("data: ")) {
-        try {
-          const data = JSON.parse(line.slice(6));
-          console.log("✨ 解析数据:", data);
-          chunkCount++;
-          yield data;
-        } catch (e) {
-          console.error("❌ JSON 解析失败:", e, "原始行:", line);
-        }
+      if (!line.startsWith("data: ")) {
+        continue;
+      }
+
+      try {
+        const data = JSON.parse(line.slice(6));
+        console.log("解析数据:", data);
+        chunkCount++;
+        yield data;
+      } catch (error) {
+        console.error("JSON 解析失败:", error, "原始行:", line);
       }
     }
   }

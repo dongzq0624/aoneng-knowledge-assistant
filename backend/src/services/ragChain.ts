@@ -3,11 +3,16 @@ import dotenv from "dotenv";
 dotenv.config(); // 确保环境变量已加载
 
 import { ChatOpenAI } from "@langchain/openai";
+import { HuggingFaceInferenceEmbeddings } from "@langchain/community/embeddings/hf";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import fs from "fs/promises";
 import path from "path";
 import { vectorStore } from "./vectorstore.js";
-import type { ChatMessage, SourceReference } from "../types.js";
+import type {
+  ChatMessage,
+  DocumentChunk,
+  SourceReference,
+} from "../types.js";
 
 // 默认配置（作为后备）
 const DEFAULT_GLM_API_KEY = process.env.GLM_API_KEY || "";
@@ -30,6 +35,396 @@ interface ModelConfig {
   temperature: number;
   maxTokens: number;
   embeddingModel: string;
+}
+
+interface RankedDocument {
+  doc: DocumentChunk;
+  score: number;
+  bm25Score: number;
+  vectorScore: number;
+  matchedTerms: string[];
+}
+
+interface BM25SearchResult {
+  doc: DocumentChunk;
+  score: number;
+  matchedTerms: string[];
+}
+
+const BM25_K1 = 1.5;
+const BM25_B = 0.75;
+const HYBRID_RRF_K = 50;
+
+function normalizeSearchText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/\[images_data\][\s\S]*?\[\/images_data\]/gi, " ")
+    .replace(/[^\p{L}\p{N}\u4e00-\u9fa5]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function uniqueTerms(terms: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const rawTerm of terms) {
+    const term = normalizeSearchText(rawTerm);
+    if (!term || seen.has(term)) {
+      continue;
+    }
+    seen.add(term);
+    result.push(term);
+  }
+
+  return result;
+}
+
+function tokenizeBM25Text(text: string): string[] {
+  const normalized = normalizeSearchText(text);
+  if (!normalized) {
+    return [];
+  }
+
+  const tokens: string[] = [];
+
+  for (const segment of normalized.split(" ")) {
+    if (!segment) {
+      continue;
+    }
+
+    tokens.push(segment);
+
+    if (/^[\u4e00-\u9fa5]+$/.test(segment)) {
+      if (segment.length >= 2) {
+        for (let i = 0; i <= segment.length - 2; i++) {
+          tokens.push(segment.slice(i, i + 2));
+        }
+      }
+
+      if (segment.length >= 3) {
+        for (let i = 0; i <= segment.length - 3; i++) {
+          tokens.push(segment.slice(i, i + 3));
+        }
+      }
+    }
+  }
+
+  return tokens;
+}
+
+function buildSearchTerms(
+  question: string,
+  rewrittenQuery: string,
+  keywords: string[]
+): string[] {
+  const baseTerms = [
+    ...keywords,
+    question,
+    rewrittenQuery,
+    ...question.split(/[\s,，。！？、；：/]+/),
+    ...rewrittenQuery.split(/[\s,，。！？、；：/]+/),
+  ];
+
+  const terms = uniqueTerms(baseTerms).flatMap((term) => {
+    const derived = [term];
+
+    if (/^[\u4e00-\u9fa5]{4,8}$/.test(term)) {
+      for (let i = 0; i <= term.length - 2; i++) {
+        derived.push(term.slice(i, i + 2));
+      }
+      for (let i = 0; i <= term.length - 3; i++) {
+        derived.push(term.slice(i, i + 3));
+      }
+    }
+
+    return derived;
+  });
+
+  return uniqueTerms(terms).filter((term) => term.length >= 2);
+}
+
+function countOccurrences(text: string, term: string): number {
+  if (!text || !term) {
+    return 0;
+  }
+
+  let count = 0;
+  let startIndex = 0;
+
+  while (true) {
+    const index = text.indexOf(term, startIndex);
+    if (index === -1) {
+      break;
+    }
+    count++;
+    startIndex = index + term.length;
+  }
+
+  return count;
+}
+
+async function bm25Search(
+  docs: DocumentChunk[],
+  question: string,
+  rewrittenQuery: string,
+  keywords: string[],
+  topK: number = 10
+): Promise<BM25SearchResult[]> {
+  const queryTerms = buildSearchTerms(question, rewrittenQuery, keywords);
+  if (queryTerms.length === 0) {
+    return [];
+  }
+
+  const preparedDocs = docs.map((doc) => {
+    const weightedText = `${doc.metadata.filename} ${doc.metadata.filename} ${doc.pageContent}`;
+    const tokens = tokenizeBM25Text(weightedText);
+    const tf = new Map<string, number>();
+
+    for (const token of tokens) {
+      tf.set(token, (tf.get(token) || 0) + 1);
+    }
+
+    return {
+      doc,
+      tf,
+      tokensLength: tokens.length || 1,
+      tokenSet: new Set(tokens),
+    };
+  });
+
+  const avgDocLength =
+    preparedDocs.reduce((sum, item) => sum + item.tokensLength, 0) /
+    preparedDocs.length;
+  const docCount = preparedDocs.length;
+  const docFreq = new Map<string, number>();
+
+  for (const term of queryTerms) {
+    let count = 0;
+    for (const item of preparedDocs) {
+      if (item.tokenSet.has(term)) {
+        count++;
+      }
+    }
+    docFreq.set(term, count);
+  }
+
+  const scored = preparedDocs
+    .map((item) => {
+      let score = 0;
+      const matchedTerms: string[] = [];
+
+      for (const term of queryTerms) {
+        const tf = item.tf.get(term) || 0;
+        if (tf === 0) {
+          continue;
+        }
+
+        const df = docFreq.get(term) || 0;
+        const idf = Math.log(1 + (docCount - df + 0.5) / (df + 0.5));
+        const numerator = tf * (BM25_K1 + 1);
+        const denominator =
+          tf + BM25_K1 * (1 - BM25_B + BM25_B * (item.tokensLength / avgDocLength));
+
+        score += idf * (numerator / denominator);
+        matchedTerms.push(term);
+      }
+
+      return {
+        doc: item.doc,
+        score,
+        matchedTerms: [...new Set(matchedTerms)],
+      };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK);
+
+  scored.forEach((item, index) => {
+    console.log(
+      `🔍 BM25 排序 ${index + 1}: [${item.doc.metadata.filename}] score=${item.score.toFixed(4)} terms=${item.matchedTerms.join(", ")}`
+    );
+  });
+
+  return scored;
+}
+
+function rankRetrievedDocuments(
+  vectorDocs: DocumentChunk[],
+  bm25Docs: BM25SearchResult[]
+): RankedDocument[] {
+  const merged = new Map<
+    string,
+    {
+      doc: DocumentChunk;
+      vectorRank: number | null;
+      bm25Rank: number | null;
+      bm25Score: number;
+      matchedTerms: string[];
+    }
+  >();
+
+  vectorDocs.forEach((doc, index) => {
+    const id = `${doc.metadata.filename}-${doc.metadata.chunkIndex}`;
+    const existing = merged.get(id);
+    merged.set(id, {
+      doc,
+      vectorRank: index,
+      bm25Rank: existing?.bm25Rank ?? null,
+      bm25Score: existing?.bm25Score ?? 0,
+      matchedTerms: existing?.matchedTerms ?? [],
+    });
+  });
+
+  bm25Docs.forEach((item, index) => {
+    const id = `${item.doc.metadata.filename}-${item.doc.metadata.chunkIndex}`;
+    const existing = merged.get(id);
+    merged.set(id, {
+      doc: item.doc,
+      vectorRank: existing?.vectorRank ?? null,
+      bm25Rank: index,
+      bm25Score: item.score,
+      matchedTerms: item.matchedTerms,
+    });
+  });
+
+  return Array.from(merged.values())
+    .map((entry) => {
+      const vectorScore =
+        entry.vectorRank !== null ? 1 / (HYBRID_RRF_K + entry.vectorRank + 1) : 0;
+      const bm25RankScore =
+        entry.bm25Rank !== null ? 1 / (HYBRID_RRF_K + entry.bm25Rank + 1) : 0;
+
+      return {
+        doc: entry.doc,
+        score: vectorScore + bm25RankScore,
+        bm25Score: entry.bm25Score,
+        vectorScore,
+        matchedTerms: entry.matchedTerms,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+}
+
+// ==================== Cross-Encoder Rerank ====================
+
+interface RerankResult {
+  doc: DocumentChunk;
+  rerankScore: number;
+  originalIndex: number;
+}
+
+const RERANK_TOP_K = 12;   // Rerank 候选数量
+const RERANK_THRESHOLD = 3; // 最低相关性分数（0-10）
+const RERANK_MODEL = "BAAI/bge-reranker-large";
+
+async function rerankWithCrossEncoder(
+  question: string,
+  docs: RankedDocument[]
+): Promise<RerankResult[]> {
+  if (docs.length === 0) return [];
+
+  const candidates = docs.slice(0, RERANK_TOP_K);
+  const hfToken = process.env.HUGGINGFACEHUB_API_TOKEN || "";
+
+  try {
+    console.log(`🔄 开始 Cross-Encoder Rerank，候选 ${candidates.length} 个文档...`);
+
+    if (hfToken) {
+      // 使用 HuggingFace Inference API 调用 bge-reranker-large
+      const docPairs: [string, string][] = candidates.map((r) => [
+        question,
+        r.doc.pageContent.substring(0, 1500),
+      ]);
+
+      const response = await fetch(
+        `https://api-inference.huggingface.co/models/${RERANK_MODEL}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${hfToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ inputs: docPairs }),
+        }
+      );
+
+      if (response.ok) {
+        const scores = (await response.json()) as number[];
+
+        const reranked = candidates
+          .map((ranked, idx) => ({
+            doc: ranked.doc,
+            rerankScore: scores[idx] ?? 0,
+            originalIndex: idx,
+          }))
+          .sort((a, b) => b.rerankScore - a.rerankScore);
+
+        reranked.forEach((item, idx) => {
+          console.log(
+            `  ${idx + 1}. [${item.doc.metadata.filename}] Rerank分数: ${item.rerankScore.toFixed(4)}`
+          );
+        });
+
+        console.log(`✅ Cross-Encoder Rerank 完成`);
+        return reranked;
+      }
+
+      console.warn(
+        `⚠️ HuggingFace Inference 返回错误 ${response.status}，降级为 LLM Rerank`
+      );
+    } else {
+      console.log(`⚠️ 未配置 HUGGINGFACEHUB_API_TOKEN，降级为 LLM Rerank`);
+    }
+  } catch (error) {
+    console.warn(`⚠️ Cross-Encoder Rerank 失败，降级为 LLM Rerank:`, error);
+  }
+
+  // 降级：使用 LLM 评分（每个文档一次 LLM 调用，batch 并行）
+  console.log(`🔄 开始 LLM Rerank（降级模式）...`);
+  const scored = await Promise.all(
+    candidates.map(async (ranked, idx) => {
+      const rerankPrompt = `请评估以下文档内容与用户问题的相关性，给出 0-10 的评分（10 表示非常相关，0 表示完全不相关）。
+只返回数字评分，不要有其他内容。
+
+用户问题：${question}
+
+文档内容：
+${ranked.doc.pageContent.substring(0, 800)}
+
+相关性评分（0-10）：`;
+
+      try {
+        const response = await getPreprocessingLLM().invoke(rerankPrompt);
+        const scoreText = response.content.toString().trim();
+        const score = parseFloat(scoreText);
+        const validScore = isNaN(score) ? 5 : Math.max(0, Math.min(10, score));
+
+        return {
+          doc: ranked.doc,
+          rerankScore: validScore,
+          originalIndex: idx,
+        };
+      } catch {
+        return {
+          doc: ranked.doc,
+          rerankScore: 5,
+          originalIndex: idx,
+        };
+      }
+    })
+  );
+
+  const result = scored.sort((a, b) => b.rerankScore - a.rerankScore);
+
+  result.forEach((item, idx) => {
+    console.log(
+      `  ${idx + 1}. [${item.doc.metadata.filename}] Rerank分数: ${item.rerankScore}/10`
+    );
+  });
+
+  console.log(`✅ LLM Rerank 完成`);
+  return result;
 }
 
 // 判断模型属于哪个提供商
@@ -291,6 +686,28 @@ ${history}
 }
 
 // 提取关键词（使用快速模型）
+function buildPolishedRAGPrompt(context: string, history: string): string {
+  return `你是一个企业知识库问答助手。请严格依据当前提供的文档上下文回答，不要使用上下文之外的事实，不要臆测，不要跨文档补充。
+
+【文档上下文】
+${context}
+
+【聊天历史】
+${history}
+
+【回答要求】
+1. 事实必须严格以当前上下文为准；若上下文与聊天历史不一致，以当前上下文为准。
+2. 在不改变事实、不新增信息、不省略关键点的前提下，可以对原文做自然、专业、易读的表述优化。
+3. 优先直接回答用户问题，不要机械复述“严格依据上下文”“无遗漏无冗余”“以上几点”等元话术，除非用户明确要求。
+4. 如果上下文中存在多个并列要点、步骤、痛点、结论或数据，请完整列出，不要遗漏。
+5. 只回答与问题直接相关的信息，不要夹带无关背景。
+6. 如果上下文没有答案，就明确说明“根据当前提供的文档上下文，暂无相关信息”，不要编造。
+7. 若上下文包含数值、时间、地区、型号、规则等关键信息，尽量保留原表述和原数值。
+8. 输出使用清晰的 Markdown；能用短段落说明时，优先短段落，只有在内容天然适合枚举时再使用列表。
+9. 当用户要求“严格依据文档/上下文”时，理解为“事实受限于文档”，不是“必须逐字照抄文档”。
+10. 不要输出“摘录如下”“直接完整摘录”“未增删推断”等模板化声明，除非用户明确要求保留。`;
+}
+
 async function extractKeywords(question: string): Promise<string[]> {
   try {
     const keywordPrompt = `请从以下问题中提取3-5个最重要的关键词，用于文档检索。
@@ -449,53 +866,49 @@ ${doc.pageContent.substring(0, 800)}...
 export async function* ragQuery(
   question: string,
   history: ChatMessage[] = []
-): AsyncGenerator<string, void, unknown> {
+): AsyncGenerator<{ type: string; content?: string; sources?: SourceReference[]; images?: string[] }, void, unknown> {
   try {
-    // 1. 提取关键词
-    console.log("🔑 提取关键词...");
-    const keywords = await extractKeywords(question);
+    // 1. 并行提取关键词 + 查询改写（节省串行等待时间）
+    console.log("🔑 提取关键词 + 优化查询语句...");
+    const [keywords, rewrittenQuery] = await Promise.all([
+      extractKeywords(question),
+      rewriteQuery(question),
+    ]);
 
-    // 2. 查询改写：优化检索查询
-    console.log("📝 优化查询语句...");
-    const rewrittenQuery = await rewriteQuery(question);
+    // 2. 一次性加载全表文档（BM25 和后续上下文构建共用，避免重复扫描）
+    const allDocs = await vectorStore.getAllDocumentChunks();
+    if (allDocs.length === 0) {
+      console.log("⚠️ 知识库为空，无法检索相关文档");
+      yield { type: "sources", sources: [] };
+      yield { type: "content", content: "当前知识库为空，请先上传文档后再提问。" };
+      return;
+    }
+    console.log(`📚 知识库共 ${allDocs.length} 个文档块`);
 
-    // 3. 混合检索：向量检索 + 关键词检索
-    console.log("🔍 混合检索相关文档...");
+    // 3. 向量检索（语义相似） + BM25 检索 并行执行
+    console.log("🔍 向量检索 + BM25 检索中...");
+    const [vectorResults, bm25Results] = await Promise.all([
+      vectorStore.similaritySearch(rewrittenQuery, 10, 0.35),
+      bm25Search(allDocs, question, rewrittenQuery, keywords, 10),
+    ]);
 
-    // 3.1 向量检索（语义相似）- 降低阈值到 0.45，提高召回率
-    const vectorDocs = await vectorStore.similaritySearch(
-      rewrittenQuery,
-      6,
-      0.45
+    console.log(`✓ 向量检索找到 ${vectorResults.length} 个文档`);
+    console.log(`✓ BM25 检索找到 ${bm25Results.length} 个文档`);
+
+    // 4. RRF 混合排序融合
+    const rankedDocs = rankRetrievedDocuments(
+      vectorResults,
+      bm25Results
     );
-    console.log(`✓ 向量检索找到 ${vectorDocs.length} 个文档`);
 
-    // 3.2 关键词检索（精确匹配）
-    const keywordDocs = await keywordSearch(keywords, 5);
-    console.log(`✓ 关键词检索找到 ${keywordDocs.length} 个文档`);
+    // 5. Cross-Encoder Rerank（精准重排，过滤低相关文档）
+    const rerankedDocs = await rerankWithCrossEncoder(question, rankedDocs);
 
-    // 3.3 合并去重（优先保留向量检索结果）
-    const mergedDocs = [...vectorDocs];
-    const existingIds = new Set(
-      vectorDocs.map((d) => `${d.metadata.filename}-${d.metadata.chunkIndex}`)
-    );
-
-    keywordDocs.forEach((doc) => {
-      const id = `${doc.metadata.filename}-${doc.metadata.chunkIndex}`;
-      if (!existingIds.has(id)) {
-        mergedDocs.push(doc);
-        existingIds.add(id);
-      }
-    });
-
-    console.log(`✓ 合并后共 ${mergedDocs.length} 个候选文档`);
-
-    // 4. Rerank：对检索结果重排序（暂时禁用，直接使用混合检索结果）
-    // const relevantDocs = await rerankDocuments(question, mergedDocs);
-    const relevantDocs = mergedDocs; // 直接使用混合检索结果
-
-    // 5. 构建上下文（最多使用 top 4）
-    const topDocs = relevantDocs.slice(0, 4);
+    // 6. 应用 Rerank 阈值过滤，取 top 6
+    const topDocs = rerankedDocs
+      .filter((r) => r.rerankScore >= RERANK_THRESHOLD)
+      .slice(0, 6)
+      .map((r) => r.doc);
     
     const images: string[] = [];
     
@@ -517,17 +930,19 @@ export async function* ragQuery(
       `✅ 最终使用 ${topDocs.length} 个文档块 (含 ${images.length} 张图片)，来自: ${sources.join(", ")}`
     );
 
-    // 6. 构建提示词，图片描述已内嵌到上下文中
-    const systemPromptText = buildRAGPrompt(
+    // 7. 先发送 sources（前端可立即显示来源）
+    if (sources.length > 0) {
+      yield { type: "sources", sources: sources.map((f) => ({ filename: f })) };
+    }
+
+    // 8. 构建提示词，图片描述已内嵌到上下文中
+    const systemPromptText = buildPolishedRAGPrompt(
       context,
-      formatHistory(history),
-      question
+      formatHistory(history)
     );
 
-    // 7. 构建多模态 Message：文本上下文 + 原始图片（让视觉模型能看图回答）
-    const messageContent: any[] = [
-      { type: "text", text: systemPromptText }
-    ];
+    // 9. 构建多模态 Message：文本上下文 + 原始图片（让视觉模型能看图回答）
+    const messageContent: any[] = [{ type: "text", text: question }];
 
     images.forEach(imgUrl => {
       messageContent.push({
@@ -537,76 +952,69 @@ export async function* ragQuery(
     });
 
     const messages = [
+      new SystemMessage(systemPromptText),
       new HumanMessage({ content: messageContent })
     ];
 
-    // 8. 先将图片数据发给前端（用于图文联动展示）
-    console.log("🤖 调用 LLM 模型生成回答...");
-    
+    // 10. 先将图片数据发给前端（用于图文联动展示）
     if (images.length > 0) {
-      const imagesJson = JSON.stringify(images);
-      yield `[IMAGES_DATA]${imagesJson}[/IMAGES_DATA]`;
+      yield { type: "images", images };
     }
 
-    // 9. 流式调用 LLM
+    // 11. 流式调用 LLM
+    console.log("🤖 调用 LLM 模型生成回答...");
     const stream = await getGenerationLLM().stream(messages);
 
     for await (const chunk of stream) {
       if (chunk.content) {
-        yield chunk.content.toString();
+        yield { type: "content", content: chunk.content.toString() };
       }
     }
 
     console.log("✅ 回答生成完成");
   } catch (error) {
     console.error("❌ RAG 查询失败:", error);
-    yield `抱歉，处理您的问题时出现错误: ${
+    yield { type: "content", content: `抱歉，处理您的问题时出现错误: ${
       error instanceof Error ? error.message : "未知错误"
-    }`;
+    }` };
   }
 }
 
 // 获取相关文档（用于显示引用来源）
 export async function getRelevantSources(question: string): Promise<SourceReference[]> {
   try {
-    // 使用相同的优化流程
-    const keywords = await extractKeywords(question);
-    const rewrittenQuery = await rewriteQuery(question);
+    const [keywords, rewrittenQuery] = await Promise.all([
+      extractKeywords(question),
+      rewriteQuery(question),
+    ]);
 
-    // 混合检索
-    const vectorDocs = await vectorStore.similaritySearch(
-      rewrittenQuery,
-      6,
-      0.45
+    const allDocs = await vectorStore.getAllDocumentChunks();
+    if (allDocs.length === 0) {
+      return [];
+    }
+
+    const [vectorResults, bm25Results] = await Promise.all([
+      vectorStore.similaritySearch(rewrittenQuery, 10, 0.35),
+      bm25Search(allDocs, question, rewrittenQuery, keywords, 10),
+    ]);
+
+    const rankedDocs = rankRetrievedDocuments(
+      vectorResults,
+      bm25Results
     );
-    const keywordDocs = await keywordSearch(keywords, 5);
 
-    // 合并去重
-    const mergedDocs = [...vectorDocs];
-    const existingIds = new Set(
-      vectorDocs.map((d) => `${d.metadata.filename}-${d.metadata.chunkIndex}`)
-    );
+    const rerankedDocs = await rerankWithCrossEncoder(question, rankedDocs);
 
-    keywordDocs.forEach((doc) => {
-      const id = `${doc.metadata.filename}-${doc.metadata.chunkIndex}`;
-      if (!existingIds.has(id)) {
-        mergedDocs.push(doc);
-      }
-    });
-
-    // const relevantDocs = await rerankDocuments(question, mergedDocs);
-    // const topDocs = relevantDocs.slice(0, 4);
-    const topDocs = mergedDocs.slice(0, 4); // 直接使用混合检索结果
-
-    // 按文件名分组
+    const topDocs = rerankedDocs
+      .filter((r) => r.rerankScore >= RERANK_THRESHOLD)
+      .slice(0, 6)
+      .map((r) => r.doc);
     const fileSet = new Set<string>();
-    
     topDocs.forEach((doc) => {
       fileSet.add(doc.metadata.filename);
       console.log(`📄 文档来源: ${doc.metadata.filename}`);
     });
 
-    // 转换为SourceReference数组
     const sources: SourceReference[] = Array.from(fileSet).map((filename) => ({
       filename,
     }));

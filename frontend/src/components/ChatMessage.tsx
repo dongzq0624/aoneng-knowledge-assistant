@@ -217,17 +217,16 @@ export default function ChatMessage({ message, isDarkMode = false, onDelete, isS
   const isUser = message.role === "user";
   const [copied, setCopied] = useState(false);
 
-  // 解析并提取图片数据
+  // 优先使用独立保存的图片数据，兼容旧版 content 中的标记
   let textContent = message.content;
-  let images: string[] = [];
+  let images: string[] = message.images || [];
   
-  if (!isUser && textContent) {
-    // 匹配 [IMAGES_DATA]...[/IMAGES_DATA] 标记
+  if (!isUser && images.length === 0 && textContent) {
+    // 兼容旧版：从 content 中解析（刷新前的老数据）
     const match = textContent.match(/\[IMAGES_DATA\](.*?)\[\/IMAGES_DATA\]/);
     if (match) {
       try {
         images = JSON.parse(match[1]);
-        // 从正文中移除图片数据标记
         textContent = textContent.replace(/\[IMAGES_DATA\].*?\[\/IMAGES_DATA\]/, "");
       } catch (e) {
         console.error("解析图片数据失败", e);
@@ -412,7 +411,7 @@ export default function ChatMessage({ message, isDarkMode = false, onDelete, isS
                 )}
                 </>
               ) : (
-                <span className={`italic ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>正在输入...</span>
+                <span className={`italic ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>正在检索...</span>
               )}
             </div>
           )}

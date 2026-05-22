@@ -1,6 +1,6 @@
 // 聊天路由
 import express from "express";
-import { ragQuery, getRelevantSources } from "../services/ragChain.js";
+import { ragQuery } from "../services/ragChain.js";
 import type { ChatRequest } from "../types.js";
 
 const router = express.Router();
@@ -21,19 +21,11 @@ router.post("/", async (req, res) => {
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
-    // 首先发送相关来源
-    const sources = await getRelevantSources(message);
-    if (sources.length > 0) {
-      res.write(`data: ${JSON.stringify({ type: "sources", sources })}\n\n`);
-    }
-
-    // 流式发送回答
+    // 流式发送回答（sources 信息在 ragQuery 内部随图片一起发送）
     const stream = ragQuery(message, history);
 
     for await (const chunk of stream) {
-      res.write(
-        `data: ${JSON.stringify({ type: "content", content: chunk })}\n\n`
-      );
+      res.write(`data: ${JSON.stringify(chunk)}\n\n`);
     }
 
     // 发送结束信号

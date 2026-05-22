@@ -8,6 +8,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   sources?: SourceReference[];
+  images?: string[]; // base64 图片数据，用于多模态对话展示
 }
 
 const IMAGE_DATA_PATTERN = /\[IMAGES_DATA\][\s\S]*?\[\/IMAGES_DATA\]/g;
@@ -40,6 +41,7 @@ function prepareHistoryForRequest(history: ChatMessage[]): ChatMessage[] {
     selected.push({
       role: msg.role,
       content,
+      // 发送时不传 images，避免大 base64 数据浪费 token
     });
     totalChars += content.length;
   }
@@ -77,6 +79,7 @@ export async function* sendMessage(
   type: string;
   content?: string;
   sources?: SourceReference[];
+  images?: string[];
   error?: string;
 }> {
   const requestHistory = prepareHistoryForRequest(history);
@@ -131,7 +134,10 @@ export async function* sendMessage(
         const data = JSON.parse(line.slice(6));
         console.log("解析数据:", data);
         chunkCount++;
-        yield data;
+        // ragQuery yields plain strings; wrap as content chunk for consistency
+        yield typeof data === "string"
+          ? { type: "content", content: data }
+          : data;
       } catch (error) {
         console.error("JSON 解析失败:", error, "原始行:", line);
       }

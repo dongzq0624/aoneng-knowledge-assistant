@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import ChatMessage from "./components/ChatMessage";
 import ChatInput from "./components/ChatInput";
 import KnowledgeModal from "./components/KnowledgeModal";
@@ -40,6 +40,7 @@ function sanitizeMessageForStorage(
     sources: message.sources?.slice(0, 12).map((source) => ({
       filename: source.filename,
     })),
+    images: message.images,
   };
 }
 
@@ -102,7 +103,7 @@ function persistConversations(
 function App() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
   const [showKnowledgeModal, setShowKnowledgeModal] = useState(false);
   const [showModelSettings, setShowModelSettings] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(false);
@@ -110,6 +111,15 @@ function App() {
   const [showSidebar, setShowSidebar] = useState(true);
   const abortControllerRef = useRef<AbortController | null>(null);
   const [storageNotice, setStorageNotice] = useState<string | null>(null);
+
+  // 流式回答内容（独立状态，避免每帧更新整个 conversations）
+  const [streamingContent, setStreamingContent] = useState("");
+  const [streamingSources, setStreamingSources] = useState<SourceReference[]>([]);
+  const [streamingImages, setStreamingImages] = useState<string[]>([]);
+  const isStreamingRef = useRef(false);
+  // 用 ref 追踪实时值，避免闭包陷阱（done 事件中读取不到最新 state）
+  const sourcesRef = useRef<SourceReference[]>([]);
+  const imagesRef = useRef<string[]>([]);
 
   // 获取当前对话
   const currentConversation = conversations.find(c => c.id === currentConversationId);
@@ -155,10 +165,10 @@ function App() {
     }
   }, [conversations]);
 
-  // 自动滚动到底部
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [currentMessages]);
+  // 自动滚动到底部（流式期间也要实时滚动，用 useLayoutEffect 避免闪烁）
+  useLayoutEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ block: "end" });
+  }, [currentMessages, streamingContent]);
 
   // 监听屏幕尺寸变化，移动端自动收起侧边栏
   useEffect(() => {
@@ -215,10 +225,25 @@ function App() {
     }
   };
 
-  // 更新当前对话
-  const updateCurrentConversation = (newMessages: Message[]) => {
-    if (!currentConversationId) {
-      // 如果没有当前对话，创建一个
+  // 停止生成
+  const stopGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+  };
+
+  const handleSendMessage = async (content: string) => {
+    if (!content.trim() || loadingConversationId !== null) return;
+
+    const userMessage: Message = { role: "user", content };
+    const newMessages = [...currentMessages, userMessage];
+
+    // 捕获当前对话 ID，避免异步过程中 state 变化导致闭包问题
+    const conversationId = currentConversationId;
+
+    // 创建新对话或更新现有对话（只执行一次）
+    if (!conversationId) {
       const newId = Date.now().toString();
       const newConversation: Conversation = {
         id: newId,
@@ -230,94 +255,96 @@ function App() {
       setConversations(prev => [newConversation, ...prev]);
       setCurrentConversationId(newId);
     } else {
-      // 更新现有对话
       setConversations(prev => prev.map(c => {
-        if (c.id === currentConversationId) {
+        if (c.id === conversationId) {
+          return { ...c, messages: newMessages, title: generateConversationTitle(newMessages), updatedAt: Date.now() };
+        }
+        return c;
+      }));
+    }
+
+    setLoadingConversationId(conversationId);
+
+    // 重置流式状态
+    setStreamingContent("");
+    setStreamingSources([]);
+    setStreamingImages([]);
+    sourcesRef.current = [];
+    imagesRef.current = [];
+    isStreamingRef.current = true;
+
+    // 创建 AbortController
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    let assistantContent = "";
+    let finalSources: SourceReference[] = [];
+    let finalImages: string[] = [];
+
+    try {
+      const stream = sendMessage(content, currentMessages, abortController.signal);
+
+      for await (const chunk of stream) {
+        if (!isStreamingRef.current) break;
+
+        if (chunk.type === "sources") {
+          const s = chunk.sources || [];
+          setStreamingSources(s);
+          sourcesRef.current = s;
+          finalSources = s;
+        } else if (chunk.type === "images") {
+          // 仅记录到 ref，等回答结束后再显示（避免图片在流式期间就跳出）
+          imagesRef.current = chunk.images || [];
+          finalImages = imagesRef.current;
+        } else if (chunk.type === "content") {
+          assistantContent += chunk.content || "";
+          setStreamingContent(assistantContent);
+        } else if (chunk.type === "error") {
+          throw new Error(chunk.error);
+        } else if (chunk.type === "done") {
+          isStreamingRef.current = false;
+          // 回答结束后再显示图片
+          setStreamingImages(imagesRef.current);
+        }
+      }
+    } catch (error: any) {
+      isStreamingRef.current = false;
+      if (error?.name !== "AbortError") {
+        console.error("发送消息失败:", error);
+        assistantContent = `抱歉，出现错误: ${error instanceof Error ? error.message : "未知错误"}`;
+        finalSources = [];
+        finalImages = [];
+      }
+    }
+
+    // 在 finally 之前写入 conversations，保证顺序
+    const targetId = conversationId || currentConversationId;
+    if (targetId && assistantContent !== undefined) {
+      setConversations(prev => prev.map(c => {
+        if (c.id === targetId) {
           return {
             ...c,
-            messages: newMessages,
-            title: generateConversationTitle(newMessages),
+            messages: [...c.messages, {
+              role: "assistant" as const,
+              content: assistantContent,
+              sources: finalSources.length > 0 ? finalSources : sourcesRef.current,
+              images: finalImages.length > 0 ? finalImages : imagesRef.current,
+            }],
             updatedAt: Date.now(),
           };
         }
         return c;
       }));
     }
-  };
 
-  // 停止生成
-  const stopGeneration = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-  };
-
-  const handleSendMessage = async (content: string) => {
-    if (!content.trim() || isLoading) return;
-
-    const userMessage: Message = { role: "user", content };
-    const newMessages = [...currentMessages, userMessage];
-    updateCurrentConversation(newMessages);
-    setIsLoading(true);
-
-    // 创建 AbortController
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
-
-    // 立即添加一个空的助手消息
-    const messagesWithEmpty = [...newMessages, { role: "assistant" as const, content: "", sources: [] }];
-    updateCurrentConversation(messagesWithEmpty);
-
-    try {
-      let assistantContent = "";
-      let sources: SourceReference[] = [];
-
-      const stream = sendMessage(content, currentMessages, abortController.signal);
-
-      for await (const chunk of stream) {
-        console.log("收到数据块:", chunk);
-
-        if (chunk.type === "sources") {
-          sources = chunk.sources || [];
-        } else if (chunk.type === "content") {
-          assistantContent += chunk.content || "";
-          // 实时更新最后一条助手消息
-          updateCurrentConversation(
-            messagesWithEmpty.map((msg, idx) => {
-              if (idx === messagesWithEmpty.length - 1 && msg.role === "assistant") {
-                return { role: "assistant", content: assistantContent, sources };
-              }
-              return msg;
-            })
-          );
-        } else if (chunk.type === "error") {
-          throw new Error(chunk.error);
-        } else if (chunk.type === "done") {
-          console.log("流式传输完成");
-        }
-      }
-    } catch (error: any) {
-      if (error?.name === "AbortError") {
-        console.log("🛑 用户停止了生成");
-      } else {
-        console.error("发送消息失败:", error);
-        updateCurrentConversation(
-          currentMessages.map((msg, idx) => {
-            if (idx === currentMessages.length - 1 && msg.role === "assistant") {
-              return {
-                role: "assistant",
-                content: `抱歉，出现错误: ${error instanceof Error ? error.message : "未知错误"}`,
-              };
-            }
-            return msg;
-          })
-        );
-      }
-    } finally {
-      setIsLoading(false);
-      abortControllerRef.current = null;
-    }
+    // 清理流式状态
+    setLoadingConversationId(null);
+    abortControllerRef.current = null;
+    setStreamingContent("");
+    setStreamingSources([]);
+    setStreamingImages([]);
+    sourcesRef.current = [];
+    imagesRef.current = [];
   };
 
   const clearHistory = () => {
@@ -497,7 +524,6 @@ function App() {
                   key={conv.id}
                   onClick={() => {
                     setCurrentConversationId(conv.id);
-                    // 移动端点击对话后自动关闭侧边栏
                     if (window.innerWidth < 1024) {
                       setShowSidebar(false);
                     }
@@ -659,18 +685,32 @@ function App() {
             ) : (
               <div className="space-y-2 sm:space-y-3">
                 {currentMessages.map((msg, idx) => (
-                  <ChatMessage 
-                    key={idx} 
-                    message={msg} 
+                  <ChatMessage
+                    key={idx}
+                    message={msg}
                     isDarkMode={isDarkMode}
                     onDelete={() => deleteMessage(idx)}
-                    isStreaming={isLoading && idx === currentMessages.length - 1 && msg.role === "assistant"}
+                    isStreaming={false}
                   />
                 ))}
-                {isLoading && (
-                  <div className={`flex items-center gap-2 text-xs ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>
-                    <div className={`animate-spin rounded-full h-3 w-3 border-b-2 ${isDarkMode ? 'border-blue-400' : 'border-blue-600'}`}></div>
-                    <span>AI 正在思考...</span>
+                {/* 流式输出（不写入 conversations，避免每帧触发重渲染） */}
+                {isStreamingRef.current && streamingContent && (
+                  <ChatMessage
+                    message={{ role: "assistant", content: streamingContent, sources: streamingSources, images: streamingImages }}
+                    isDarkMode={isDarkMode}
+                    onDelete={() => {}}
+                    isStreaming={true}
+                  />
+                )}
+                {loadingConversationId === currentConversationId && !streamingContent && (
+                  <div className="flex gap-2">
+                    <div className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center bg-gradient-to-br from-blue-600 to-blue-700 text-white shadow-md">
+                      <span className="text-xs font-bold">AI</span>
+                    </div>
+                    <div className={`flex items-center gap-2 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      <div className={`animate-spin rounded-full h-3 w-3 border-b-2 ${isDarkMode ? 'border-blue-400' : 'border-blue-600'}`}></div>
+                      <span>AI 正在思考...</span>
+                    </div>
                   </div>
                 )}
                 <div ref={messagesEndRef} />
@@ -682,7 +722,7 @@ function App() {
         {/* 输入框 */}
         <div className={`border-t backdrop-blur-sm transition-colors duration-300 ${isDarkMode ? 'bg-gray-800/80 border-gray-700' : 'bg-white/80 border-blue-100'}`}>
           <div className="max-w-5xl mx-auto px-3 sm:px-4 py-2.5 sm:py-3">
-            <ChatInput onSend={handleSendMessage} onStop={stopGeneration} disabled={isLoading} isDarkMode={isDarkMode} />
+            <ChatInput onSend={handleSendMessage} onStop={stopGeneration} disabled={loadingConversationId !== null} isDarkMode={isDarkMode} />
           </div>
         </div>
 

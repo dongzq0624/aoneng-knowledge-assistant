@@ -186,26 +186,26 @@ router.get("/models", async (req, res) => {
   try {
     const chatModels = [
       {
-        id: "glm-4-flash",
-        name: "GLM-4 Flash",
+        id: "GLM-4.7-Flash",
+        name: "GLM-4.7-Flash",
         description: "智谱快速模型，适合预处理和日常问答",
         provider: "glm",
       },
       {
-        id: "glm-4",
-        name: "GLM-4",
+        id: "GLM-4.7",
+        name: "GLM-4.7",
         description: "智谱标准模型，适合通用场景",
         provider: "glm",
       },
       {
-        id: "glm-4-plus",
-        name: "GLM-4 Plus",
+        id: "GLM-5-Turbo",
+        name: "GLM-5-Turbo",
         description: "智谱增强模型，回答质量更高",
         provider: "glm",
       },
       {
-        id: "glm-4-air",
-        name: "GLM-4 Air",
+        id: "GLM-5.1",
+        name: "GLM-5.1",
         description: "智谱轻量模型，成本更低",
         provider: "glm",
       },
@@ -222,23 +222,24 @@ router.get("/models", async (req, res) => {
         provider: "deepseek",
       },
       {
-        id: "qwen-plus",
-        name: "Qwen-Plus",
+        id: "qwen3.6-flash",
+        name: "qwen3.6-flash",
         description: "千问增强模型，性能和速度均衡",
         provider: "qwen",
       },
       {
-        id: "qwen-max",
-        name: "Qwen-Max",
-        description: "千问旗舰模型，适合复杂回答生成",
+        id: "qwen3.5-flash",
+        name: "qwen3.5-flash",
+        description: "千问增强模型，性能和速度均衡",
         provider: "qwen",
       },
       {
-        id: "qwen-turbo",
-        name: "Qwen-Turbo",
-        description: "千问快速模型，适合预处理任务",
+        id: "qwen3.6-27b",
+        name: "qwen3.6-27b",
+        description: "千问旗舰模型，适合复杂回答生成",
         provider: "qwen",
       },
+      
     ];
 
     const embeddingModels = [
@@ -284,38 +285,21 @@ router.get("/models", async (req, res) => {
         provider: "deepseek",
       },
       {
-        id: "Qwen3.6-Plus",
-        name: "Qwen3.6-Plus",
-        description: "千问 3.6 增强版，适合复杂图文理解",
-        provider: "qwen",
-      },
-      {
-        id: "Qwen3.6-Flash",
-        name: "Qwen3.6-Flash",
+        id: "qwen3.6-flash",
+        name: "qwen3.6-flash",
         description: "千问 3.6 快速版，适合大批量页面解析",
         provider: "qwen",
       },
       {
-        id: "Qwen3.5-Plus",
-        name: "Qwen3.5-Plus",
-        description: "千问 3.5 增强版，适合通用图文解析",
+        id: "qwen3.5-plus-2026-04-20",
+        name: "qwen3.5-plus-2026-04-20",
+        description: "千问 3.5 增强版，适合复杂图文理解",
         provider: "qwen",
       },
+       
       {
-        id: "Qwen3.5-Flash",
-        name: "Qwen3.5-Flash",
-        description: "千问 3.5 快速版，适合轻量文档理解",
-        provider: "qwen",
-      },
-      {
-        id: "Qwen-VL-Plus",
-        name: "Qwen-VL-Plus",
-        description: "千问视觉模型，适合常规 PDF、DOCX 页面解析",
-        provider: "qwen",
-      },
-      {
-        id: "Qwen-VL-Max",
-        name: "Qwen-VL-Max",
+        id: "qwen-vl-max",
+        name: "qwen-vl-max",
         description: "千问旗舰视觉模型，适合复杂图表和高质量页面理解",
         provider: "qwen",
       },

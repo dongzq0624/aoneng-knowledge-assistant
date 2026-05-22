@@ -110,6 +110,14 @@ function getEmbeddingUrl(config: EmbeddingConfig): string {
   return `${config.baseUrl}/embeddings`;
 }
 
+function normalizeSearchText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\u4e00-\u9fa5]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -513,8 +521,8 @@ class VectorStoreService {
   // 相似度搜索
   async similaritySearch(
     query: string,
-    topK: number = 6,
-    minScore: number = 0.5 // 最小相似度阈值（0-1，越高越严格）
+    topK: number = 10,
+    minScore: number = 0.35 // 最小相似度阈值（0-1，越高越严格）
   ): Promise<DocumentChunk[]> {
     await this.initialize();
     if (!this.table) {
@@ -587,6 +595,66 @@ class VectorStoreService {
       return rows.map((row) => this.recordToChunk(row));
     } catch (error) {
       console.error("❌ 获取所有文档块失败:", error);
+      return [];
+    }
+  }
+
+  // 用 SQL LIKE 实现关键词精确匹配（避免加载全表到 JS 内存）
+  async keywordSearch(
+    query: string,
+    topK: number = 8
+  ): Promise<DocumentChunk[]> {
+    await this.initialize();
+    if (!this.table) return [];
+
+    const searchTerms = normalizeSearchText(query)
+      .split(/\s+/)
+      .filter((t) => t.length >= 2)
+      .slice(0, 10);
+
+    if (searchTerms.length === 0) return [];
+
+    try {
+      const likeConditions = searchTerms
+        .map((term) => {
+          const escaped = term.replace(/'/g, "''");
+          return `(text LIKE '%${escaped}%' OR filename LIKE '%${escaped}%')`;
+        })
+        .join(" AND ");
+
+      const rows = await (this.table as any)
+        .filter(`filename != '${INIT_FILENAME}' AND (${likeConditions})`)
+        .limit(topK * 2)
+        .execute();
+
+      const scored = rows.map((row: any) => {
+        const record = this.normalizeStoredRecord(row);
+        let score = 0;
+        searchTerms.forEach((term) => {
+          const t = term.toLowerCase();
+          const text = (record.text || "").toLowerCase();
+          const fn = (record.filename || "").toLowerCase();
+          if (text.includes(t)) score += text.split(t).length - 1;
+          if (fn.includes(t)) score += 3; // 文件名命中权重更高
+        });
+        return { chunk: this.recordToChunk(record), score };
+      });
+
+      const results = scored
+        .filter((r: any) => r.score > 0)
+        .sort((a: any, b: any) => b.score - a.score)
+        .slice(0, topK)
+        .map((r: any) => r.chunk);
+
+      results.forEach((chunk: any, index: number) => {
+        console.log(
+          `✓ 关键词匹配 ${index + 1}: [${chunk.metadata.filename}]`
+        );
+      });
+
+      return results;
+    } catch (error) {
+      console.error("❌ 关键词检索失败:", error);
       return [];
     }
   }
